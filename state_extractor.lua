@@ -57,13 +57,72 @@ function StateExtractor.get_game_state(CardExtractor)
         end
     end
 
-    -- E. 盲注界面特有数据
-    if current_screen == "BLIND_SELECT" and G.GAME.round_resets.blind_states then
+    -- E. 盲注界面特有数据 
+    if current_screen == "BLIND_SELECT" and G.GAME.round_resets then
+        
+        -- 辅助函数：通过字符串 ID (如 "tag_uncommon") 去字典里查文本
+        local function get_tag_info(tag_key)
+        if type(tag_key) ~= "string" then return nil end
+            
+            local loc_text = {}
+            local name = tag_key
+            
+            -- 1. 获取本地化文本模板
+            if G.localization and G.localization.descriptions and G.localization.descriptions.Tag and G.localization.descriptions.Tag[tag_key] then
+                loc_text = G.localization.descriptions.Tag[tag_key].text or {}
+                name = G.localization.descriptions.Tag[tag_key].name or tag_key
+            end
+            
+            -- 2. 获取标签的核心数值配置 (提取给 RL 智能体直接使用)
+            local vars = {}
+            if G.P_TAGS and G.P_TAGS[tag_key] and G.P_TAGS[tag_key].config then
+                -- 遍历并只提取数字和字符串等基础类型，防止互相引用导致 JSON 崩溃
+                for k, v in pairs(G.P_TAGS[tag_key].config) do
+                    if type(v) == "number" or type(v) == "string" or type(v) == "boolean" then
+                        vars[k] = v
+                    end
+                end
+            end
+            
+            return {
+                id_key = tag_key,
+                name = name,
+                description = loc_text,
+                config_vars = vars
+            }
+        end
+
+        -- 1. 获取跳过标签的字符串 ID
+        local small_tag_key = G.GAME.round_resets.blind_tags and G.GAME.round_resets.blind_tags.Small
+        local big_tag_key = G.GAME.round_resets.blind_tags and G.GAME.round_resets.blind_tags.Big
+
+        -- 2. 获取 Boss 盲注的字符串 ID (根据你的日志，在 blind_choices 里面)
+        local boss_key = G.GAME.round_resets.blind_choices and G.GAME.round_resets.blind_choices.Boss
+        local boss_desc = {}
+        local boss_name = boss_key
+        
+        -- 查表获取 Boss 的描述和名字
+        if type(boss_key) == "string" and G.localization and G.localization.descriptions and G.localization.descriptions.Blind and G.localization.descriptions.Blind[boss_key] then
+            boss_desc = G.localization.descriptions.Blind[boss_key].text or {}
+            boss_name = G.localization.descriptions.Blind[boss_key].name or boss_key
+        end
+
+        -- 3. 拼装盲注数据
         blinds = {
-            small_blind_state = G.GAME.round_resets.blind_states.Small or "Unknown",
-            big_blind_state = G.GAME.round_resets.blind_states.Big or "Unknown",
-            boss_blind_state = G.GAME.round_resets.blind_states.Boss or "Unknown",
-            current_boss_name = G.GAME.boss_blind and G.GAME.boss_blind.name or "Unknown"
+            small_blind = {
+                state = G.GAME.round_resets.blind_states and G.GAME.round_resets.blind_states.Small or "Unknown",
+                skip_tag = get_tag_info(small_tag_key)
+            },
+            big_blind = {
+                state = G.GAME.round_resets.blind_states and G.GAME.round_resets.blind_states.Big or "Unknown",
+                skip_tag = get_tag_info(big_tag_key)
+            },
+            boss_blind = {
+                state = G.GAME.round_resets.blind_states and G.GAME.round_resets.blind_states.Boss or "Unknown",
+                id_key = boss_key,
+                name = boss_name,
+                description = boss_desc
+            }
         }
     end
 

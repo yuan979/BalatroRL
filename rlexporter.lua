@@ -28,6 +28,7 @@ end
 local JSONEncoder = load_module("json_encoder.lua")
 local CardExtractor = load_module("card_extractor.lua")
 local StateExtractor = load_module("state_extractor.lua")
+local RunInfoExtractor = load_module("run_info_extractor.lua")
 
 -- 防崩溃安全检查
 if not JSONEncoder or not CardExtractor or not StateExtractor then
@@ -39,10 +40,21 @@ end
 -- 2. 导出任务分发
 -- =========================================
 local function run_export_task()
+-- 安全检查：确保游戏在运行中
+    if not G or not G.STAGE or G.STAGE ~= G.STAGES.RUN then return end
+
+    -- 任务 A: 导出高频变动的环境状态 -> rl_observation.json
     local state = StateExtractor.get_game_state(CardExtractor)
     if state then
         love.filesystem.write("rl_observation.json", JSONEncoder.encode(state))
     end
+
+    -- 任务 B: 导出低频变动的比赛与牌库信息 -> rl_run_info.json
+    local run_info = {
+        poker_hands = RunInfoExtractor.get_poker_hands(),
+        full_deck = RunInfoExtractor.get_full_deck(CardExtractor)
+    }
+    love.filesystem.write("rl_run_info.json", JSONEncoder.encode(run_info))
 end
 
 -- =========================================
