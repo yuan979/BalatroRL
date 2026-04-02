@@ -29,6 +29,7 @@ local JSONEncoder = load_module("json_encoder.lua")
 local CardExtractor = load_module("card_extractor.lua")
 local StateExtractor = load_module("state_extractor.lua")
 local RunInfoExtractor = load_module("run_info_extractor.lua")
+local ActionExecutor = load_module("action_executor.lua")
 
 -- 防崩溃安全检查
 if not JSONEncoder or not CardExtractor or not StateExtractor then
@@ -63,6 +64,8 @@ end
 local last_export_time = 0
 local export_interval = 0.5
 local has_printed_init = false
+local last_action_time = 0
+local action_interval = 0.1
 
 local original_love_update = love.update
 function love.update(dt)
@@ -74,6 +77,12 @@ function love.update(dt)
         print("[RL_EXPORTER] Modular Engine Hooked Successfully!")
         print("========================================")
         has_printed_init = true
+    end
+
+    last_action_time = last_action_time + dt
+    if last_action_time >= action_interval then
+        ActionExecutor.poll_and_execute()
+        last_action_time = 0
     end
 
     -- 计时器
