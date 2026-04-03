@@ -42,8 +42,8 @@ The Python agent must write one of the following commands (space-separated) to `
 
 ### Shop Management
 - `BUY_CARD <idx>`: Buys a standard card (Joker/Tarot/Planet) from the shop slots.
-- `REDEEM_VOUCHER <idx>`: Redeems a voucher from the shop.
-- `OPEN_BOOSTER <idx>`: Purchases and opens a booster pack.
+- `BUY_VOUCHER <idx>`: Redeems a voucher from the shop.
+- `BUY_BOOSTER <idx>`: Purchases and opens a booster pack.
 - `SELL_JOKER <idx>`: Sells a joker from your joker area.
 - `SELL_CONSUMABLE <idx>`: Sells a consumable from your consumable area.
 
