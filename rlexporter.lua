@@ -24,6 +24,10 @@ local function load_module(filename)
     end
 end
 
+-- 加载核心日志模块
+local Logger = load_module("logger.lua")
+if not Logger then return end
+
 -- 加载所有子模块
 local JSONEncoder = load_module("json_encoder.lua")
 local CardExtractor = load_module("card_extractor.lua")
@@ -36,6 +40,9 @@ if not JSONEncoder or not CardExtractor or not StateExtractor then
     print("[RL_EXPORTER] INIT FAILED! Please check if all 4 files are in the rlexporter folder.")
     return
 end
+
+-- 模块初始化与依赖注入
+ActionExecutor.init(Logger)
 
 -- =========================================
 -- 2. 导出任务分发
