@@ -29,16 +29,16 @@ local function create_mock_e(config_data)
 end
 
 -- ==========================================
--- 核心搜寻引擎：只匹配 button 名称
+-- 核心搜寻引擎：支持通过 ref_table (卡牌实体) 锁定按钮
 -- ==========================================
-local function aggressive_ui_search(target_button)
+local function aggressive_ui_search(target_button, target_ref_table)
     Log.debug("Starting BFS search for button: " .. tostring(target_button))
     local visited = {}
     local queue = {}
     
     for k, v in pairs(G) do
         if type(v) == "table" and type(k) == "string" then
-            if k:match("UI") or k:match("ROOM") or k:match("HUD") or k:match("overlay") or k:match("blind") or k:match("menu") or k == "jiggle" then
+            if k:match("UI") or k:match("ROOM") or k:match("HUD") or k:match("overlay") or k:match("blind") or k:match("menu") or k:match("shop") or k == "jiggle" then
                 table.insert(queue, v)
             end
         end
@@ -55,10 +55,17 @@ local function aggressive_ui_search(target_button)
             visited[curr] = true
             nodes_visited = nodes_visited + 1
             
-            -- 核心修复：因为原版游戏的 config.blind 是 nil，所以我们只需校验 config.button！
             if curr.config and type(curr.config) == "table" and curr.config.button == target_button then
-                Log.debug("Match found after visiting " .. tostring(nodes_visited) .. " nodes.")
-                return curr
+                -- 如果传了卡牌实体，必须匹配它才是对应的购买按钮
+                if target_ref_table then
+                    if curr.config.ref_table == target_ref_table then
+                        Log.debug("Match found (with ref_table) after visiting " .. tostring(nodes_visited) .. " nodes.")
+                        return curr
+                    end
+                else
+                    Log.debug("Match found after visiting " .. tostring(nodes_visited) .. " nodes.")
+                    return curr
+                end
             end
             
             for k, v in pairs(curr) do
@@ -114,35 +121,20 @@ function ActionExecutor.poll_and_execute()
         local blind_type = clean_string(params[1])
         local target_btn = (cmd == "SELECT_BLIND") and "select_blind" or "skip_blind"
         
-        -- 安全校验：防止你的 RL 在不可选状态下发指令
-        if not blind_type or not G.GAME.round_resets.blind_states[blind_type] then
-            Log.error("Invalid blind type: " .. tostring(blind_type))
-            return
-        end
-        if G.GAME.round_resets.blind_states[blind_type] ~= 'Select' then
-            Log.error("Blind [" .. blind_type .. "] is not in 'Select' state. Ignored.")
-            return
-        end
+        if not blind_type or not G.GAME.round_resets.blind_states[blind_type] then return end
+        if G.GAME.round_resets.blind_states[blind_type] ~= 'Select' then return end
         
-        -- 搜索真实按钮
         local real_btn_node = aggressive_ui_search(target_btn)
-
         if real_btn_node then
             Log.success("Real UI node captured. Triggering physical execution.")
-            -- 将真实按钮扔给底层，底层会根据真实树状结构去找标签奖励，完美执行！
             G.FUNCS[target_btn](real_btn_node)
-        else
-            Log.error("Target button not found in memory.")
         end
 
     -- 2. 离开商店
     elseif cmd == "NEXT_ROUND" and G.STATE == G.STATES.SHOP then
         local real_btn_node = aggressive_ui_search("toggle_shop")
-        if real_btn_node then
-            G.FUNCS.toggle_shop(real_btn_node)
-        else
-            G.FUNCS.toggle_shop(create_mock_e({button = "toggle_shop"}))
-        end
+        if real_btn_node then G.FUNCS.toggle_shop(real_btn_node)
+        else G.FUNCS.toggle_shop(create_mock_e({button = "toggle_shop"})) end
 
     -- 3. 出牌/弃牌
     elseif (cmd == "PLAY" or cmd == "DISCARD") and G.STATE == G.STATES.SELECTING_HAND then
@@ -151,6 +143,151 @@ function ActionExecutor.poll_and_execute()
             G.FUNCS.play_cards_from_highlighted(create_mock_e({button = "play_cards_from_highlighted"}))
         elseif cmd == "DISCARD" and #G.hand.highlighted > 0 then
             G.FUNCS.discard_cards_from_highlighted(create_mock_e({button = "discard_cards_from_highlighted"}))
+        end
+
+    -- 4. 提现结算
+    elseif cmd == "CASH_OUT" and G.STATE == G.STATES.ROUND_EVAL then
+        local real_btn_node = aggressive_ui_search("cash_out")
+        if real_btn_node then G.FUNCS.cash_out(real_btn_node)
+        else G.FUNCS.cash_out(create_mock_e({button = "cash_out"})) end
+
+    -- 5. 购买商店物品 (彻底修复：分类路由到底层机制)
+    elseif (cmd == "BUY_CARD" or cmd == "BUY_VOUCHER" or cmd == "BUY_BOOSTER") and G.STATE == G.STATES.SHOP then
+        local idx = tonumber(params[1]) or 1
+        local target_card = nil
+        local target_func = nil -- 核心：记录该物品对应的真实底层回调函数
+
+        if cmd == "BUY_CARD" and G.shop_jokers and G.shop_jokers.cards then
+            target_card = G.shop_jokers.cards[idx]
+            target_func = "buy_from_shop" 
+        elseif cmd == "BUY_VOUCHER" and G.shop_vouchers and G.shop_vouchers.cards then
+            target_card = G.shop_vouchers.cards[idx]
+            target_func = "use_card" 
+        elseif cmd == "BUY_BOOSTER" and G.shop_booster and G.shop_booster.cards then
+            target_card = G.shop_booster.cards[idx]
+            target_func = "use_card" 
+        end
+
+        if target_card and target_func then
+            if G.GAME.dollars >= (target_card.cost or 0) then
+                Log.success("Executing " .. cmd .. " via " .. target_func .. " on index " .. tostring(idx))
+
+                G.FUNCS[target_func](create_mock_e({ref_table = target_card, button = target_func}))
+            else
+                Log.warn("Not enough money! Required: " .. tostring(target_card.cost) .. ", Have: " .. tostring(G.GAME.dollars))
+            end
+        else
+            Log.error("Shop item not found for " .. cmd .. " at index " .. tostring(idx))
+        end
+
+    -- 6. 使用消耗品
+    elseif cmd == "USE_CONSUMABLE" then
+        local idx = tonumber(params[1]) or 1
+        local target_indices = {}
+        for i = 2, #params do table.insert(target_indices, params[i]) end
+        
+        if #target_indices > 0 then highlight_cards(target_indices) end
+        
+        if G.consumeables and G.consumeables.cards and G.consumeables.cards[idx] then
+            local card = G.consumeables.cards[idx]
+            -- 使用消耗品在游戏中同样是点击卡牌触发，这里也加上真实 UI 抓取
+            local real_btn_node = aggressive_ui_search("use_card", card)
+            if real_btn_node then
+                Log.success("Executing USE_CONSUMABLE physically.")
+                G.FUNCS.use_card(real_btn_node)
+            else
+                G.FUNCS.use_card(create_mock_e({ref_table = card, button = "use_card"}))
+            end
+        else
+            Log.error("Consumable not found at index " .. tostring(idx))
+        end
+
+    -- 7. 出售卡牌
+    elseif string.match(cmd, "^SELL_") then
+        local idx = tonumber(params[1]) or 1
+        local target_card = nil
+        
+        if cmd == "SELL_JOKER" and G.jokers and G.jokers.cards then target_card = G.jokers.cards[idx]
+        elseif cmd == "SELL_CONSUMABLE" and G.consumeables and G.consumeables.cards then target_card = G.consumeables.cards[idx] end
+
+        if target_card then
+            local real_btn_node = aggressive_ui_search("sell_card", target_card)
+            if real_btn_node then G.FUNCS.sell_card(real_btn_node)
+            else G.FUNCS.sell_card(create_mock_e({ref_table = target_card, button = "sell_card"})) end
+        end
+
+    -- 8. 交换卡牌位置 (已修复 align 为 align_cards)
+    elseif string.match(cmd, "^SWAP_") then
+        local idx1 = tonumber(params[1])
+        local idx2 = tonumber(params[2])
+        if idx1 and idx2 and idx1 ~= idx2 then
+            local card_area = (cmd == "SWAP_JOKER") and G.jokers or G.hand
+            if card_area and card_area.cards and card_area.cards[idx1] and card_area.cards[idx2] then
+                Log.success("Executing " .. cmd .. " between " .. idx1 .. " and " .. idx2)
+                local temp = card_area.cards[idx1]
+                card_area.cards[idx1] = card_area.cards[idx2]
+                card_area.cards[idx2] = temp
+                
+                if card_area.set_ranks then card_area:set_ranks() end
+                if card_area.align_cards then card_area:align_cards() end
+            end
+        end
+    
+
+    -- 9. 卡包操作：选牌 / 跳过
+    elseif (cmd == "SELECT_PACK_CARD" or cmd == "SKIP_PACK") then
+        -- 安全校验：只有当屏幕上有卡包时才能执行
+        if not G.pack_cards then
+            Log.error("Command " .. cmd .. " failed: No active pack on screen.")
+            return
+        end
+
+        if cmd == "SELECT_PACK_CARD" then
+            local idx = tonumber(params[1]) or 1
+            if G.pack_cards.cards and G.pack_cards.cards[idx] then
+                local target_card = G.pack_cards.cards[idx]
+                
+                -- 在底层，从卡包选牌同样是调用 use_card 函数
+                local real_btn_node = aggressive_ui_search("use_card", target_card)
+                if real_btn_node then
+                    Log.success("Executing SELECT_PACK_CARD physically on index " .. tostring(idx))
+                    G.FUNCS.use_card(real_btn_node)
+                else
+                    Log.debug("SELECT_PACK_CARD falls back to mock event safely.")
+                    G.FUNCS.use_card(create_mock_e({ref_table = target_card, button = "use_card"}))
+                end
+            else
+                Log.error("Pack card not found at index " .. tostring(idx))
+            end
+
+        elseif cmd == "SKIP_PACK" then
+            local real_btn_node = aggressive_ui_search("skip_booster")
+            if real_btn_node then
+                Log.success("Executing SKIP_PACK physically.")
+                G.FUNCS.skip_booster(real_btn_node)
+            else
+                Log.debug("SELECT_PACK_CARD falls back to mock event safely.")
+                G.FUNCS.skip_booster(create_mock_e({button = "skip_booster"}))
+            end
+        end
+
+    -- ==========================================
+    -- 调试专用：修改金钱 (SET_MONEY)
+    -- ==========================================
+    elseif cmd == "SET_MONEY" then
+        local amount = tonumber(params[1])
+        if amount then
+            -- 直接修改底层金钱变量
+            G.GAME.dollars = amount
+            
+            -- 可选：强制刷新 UI 显示，让屏幕上的数字立即更新
+            if G.HUD and G.HUD.recalculate then
+                G.HUD:recalculate()
+            end
+            
+            Log.success("Debug Action: Money set to $" .. amount)
+        else
+            Log.error("SET_MONEY failed: Invalid amount.")
         end
     end
 end

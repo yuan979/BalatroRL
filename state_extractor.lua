@@ -11,6 +11,9 @@ function StateExtractor.get_game_state(CardExtractor)
     elseif G.STATE == G.STATES.TAROT_PACK or G.STATE == G.STATES.PLANET_PACK or G.STATE == G.STATES.STANDARD_PACK or G.STATE == G.STATES.BUFFOON_PACK then current_screen = "OPENING_PACK"
     elseif G.STATE == G.STATES.SELECTING_HAND or G.STATE == G.STATES.DRAW_TO_HAND or G.STATE == G.STATES.PLAY_TAROT then current_screen = "IN_GAME"
     elseif G.STATE == G.STATES.GAME_OVER then current_screen = "GAME_OVER"
+    elseif G.STATE == G.STATES.ROUND_EVAL then current_screen = "ROUND_EVAL"
+    elseif G.STATE == G.STATES.TAROT_PACK or G.STATE == G.STATES.PLANET_PACK or G.STATE == G.STATES.STANDARD_PACK or G.STATE == G.STATES.BUFFOON_PACK or G.STATE == G.STATES.SPECTRAL_PACK then 
+        current_screen = "PACK_CHOICE"
     end
 
     -- B. 基础面板数据
@@ -126,6 +129,13 @@ function StateExtractor.get_game_state(CardExtractor)
         }
     end
 
+    local pack_choices = {}
+    if current_screen == "PACK_CHOICE" and G.pack_cards and G.pack_cards.cards then
+        for i, card in ipairs(G.pack_cards.cards) do
+            table.insert(pack_choices, CardExtractor.get_card_info(card))
+        end
+    end
+
     return {
         current_screen = current_screen,
         stats = stats,
@@ -133,7 +143,8 @@ function StateExtractor.get_game_state(CardExtractor)
         shop = shop,
         jokers = jokers,
         consumables = consumables,
-        hand = hand
+        hand = hand,
+        pack_choices = pack_choices
     }
 end
 
