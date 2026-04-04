@@ -94,18 +94,22 @@ end
 -- ==========================================
 -- 核心执行逻辑
 -- ==========================================
-function ActionExecutor.poll_and_execute()
-    local info = love.filesystem.getInfo("rl_action.txt")
-    if not info then return end
-
-    local content, _ = love.filesystem.read("rl_action.txt")
-    love.filesystem.remove("rl_action.txt")
+function ActionExecutor.execute_command(content)
     if not content or content == "" then return end
 
     if G.STATE_COMPLETE == false then 
         Log.warn("Animation in progress, ignoring command: " .. content)
         return 
     end
+
+    local args = {}
+    for word in string.gmatch(content, "%S+") do table.insert(args, word) end
+    if #args == 0 then return end
+    
+    local cmd = args[1]:upper()
+    local params = {unpack(args, 2)}
+
+    Log.info("Attempting to execute: " .. content)
 
     local args = {}
     for word in string.gmatch(content, "%S+") do table.insert(args, word) end
