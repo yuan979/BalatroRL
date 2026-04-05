@@ -58,8 +58,9 @@ function love.update(dt)
         has_printed_init = true
     end
 
-    -- 确保游戏在运行中 (STAGE == RUN)
-    if G and G.STAGE == G.STAGES.RUN then
+    -- 【核心修复】：移除 G.STAGE == G.STAGES.RUN 的限制
+    -- 只要引擎核心 (G) 存在，允许在所有阶段（含主菜单）进行网络轮询
+    if G then
         -- 核心：每帧调用 Socket 的无阻塞轮询
         IPCServer.poll_and_respond(
             -- 闭包 1: 状态获取器 (根据指令决定返回的内容)

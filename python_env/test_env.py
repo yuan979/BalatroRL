@@ -1,5 +1,7 @@
 import logging
+import time
 from balatro_env import BalatroEnv
+from balatro_actions import ACTION_MAPPING
 
 logging.basicConfig(
     level=logging.INFO,
@@ -8,48 +10,78 @@ logging.basicConfig(
 )
 logger = logging.getLogger("TestRoutine")
 
+def get_action_index(action_name: str) -> int:
+    for k, v in ACTION_MAPPING.items():
+        if v == action_name:
+            return k
+    return -1
+
+def wait_for_screen(env, target_screen, max_retries=10, delay=0.5):
+    """
+    持续轮询等待游戏进入目标界面 (处理动画过渡)
+    """
+    for _ in range(max_retries):
+        time.sleep(delay)
+        state = env.ipc.send_action_and_get_state("GET_STATE")
+        current_screen = state.get("current_screen", "UNKNOWN")
+        if current_screen == target_screen:
+            return state
+        logger.info(f"Waiting for animation... Current screen is still {current_screen}")
+    return None
+
 def run_diagnostic():
-    logger.info("Initializing Balatro Environment (TCP Socket Mode)...")
-    
-    # 实例化环境，内部会自动尝试连接 Lua 端的 TCP Server
+    logger.info("Initializing Balatro Environment for End-to-End Automation Testing...")
     try:
         env = BalatroEnv()
     except Exception as e:
-        logger.error(f"Initialization failed: {e}. Is the game running with the Mod loaded?")
+        logger.error("Initialization failed: %s", e)
         return
 
-    # 测试 1: 重置流程 (发送心跳指令 GET_STATE)
-    logger.info("Testing reset()...")
-    _, info = env.reset()
-    state = info.get('raw_state', {})
-    logger.info(f"Init Success. Screen: {state.get('current_screen', 'UNKNOWN')}")
+    obs, info = env.reset()
+    screen = info.get('raw_state', {}).get('current_screen', 'UNKNOWN')
+    logger.info("Initial Screen: %s", screen)
 
-    # 测试 2: 动作掩码机制
-    mask = info.get('action_mask')
-    if mask is not None and mask.any():
-        logger.info("Action Masking is functioning. Valid actions detected.")
-    else:
-        logger.warning("Action Mask is entirely False. Check if game is in a transition state.")
-
-    # 测试 3: 调试底层 TCP IPC 通信
-    logger.info("Testing TCP IPC via SET_MONEY 888...")
-    
-    # 在新架构下，直接调用 env 内部的 ipc 实例，
-    # 它会发送指令，并立刻被阻塞，直到瞬间接收到 Lua 返回的最新状态。
-    try:
-        new_state = env.ipc.send_action_and_get_state("SET_MONEY 888")
+    # 1. 自动开局
+    if screen in ["MAIN_MENU", "GAME_OVER"]:
+        logger.info("Detected Main Menu. Sending START_NEW_RUN...")
+        env.step(get_action_index("START_NEW_RUN"))
         
-        if new_state.get('stats', {}).get('money') == 888:
-            logger.info("TCP IPC Communication: VERIFIED")
+        # 阻塞等待进入选盲注界面
+        new_state = wait_for_screen(env, "BLIND_SELECT")
+        if new_state:
+            screen = new_state.get("current_screen")
+            logger.info("Successfully entered: %s", screen)
         else:
-            logger.error("TCP IPC Communication: FAILED (State updated, but money is incorrect)")
-            
-    except Exception as e:
-        logger.error(f"TCP IPC Communication: FAILED with exception: {e}")
+            logger.error("Failed to transition to BLIND_SELECT.")
+            return
+
+    # 2. 自动选盲注
+    if screen == "BLIND_SELECT":
+        logger.info("Detected Blind Select. Sending SELECT_BLIND Small...")
+        env.step(get_action_index("SELECT_BLIND Small"))
         
-    finally:
-        # 测试结束，安全关闭 Socket 连接
-        env.close()
+        # 阻塞等待进入打牌界面 (这里动画最长)
+        new_state = wait_for_screen(env, "IN_GAME", max_retries=15, delay=0.5)
+        if new_state:
+            screen = new_state.get("current_screen")
+            logger.info("Successfully entered: %s", screen)
+        else:
+            logger.error("Failed to transition to IN_GAME.")
+            return
+
+    # 3. 局内动作测试
+    if screen == "IN_GAME":
+        logger.info("Testing TOGGLE_CARD_1...")
+        action_idx = get_action_index("TOGGLE_CARD_1")
+        if action_idx != -1:
+            obs, reward, terminated, truncated, step_info = env.step(action_idx)
+            logger.info("Step Reward: %.4f", reward)
+            
+            # 打印刚刚选中的卡牌索引列表，验证缓存机制
+            selected = step_info.get("internal_selection", [])
+            logger.info("Currently Selected Cards Internally: %s", selected)
+            
+    env.close()
 
 if __name__ == "__main__":
     run_diagnostic()

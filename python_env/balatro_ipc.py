@@ -17,7 +17,11 @@ class BalatroIPC:
             try:
                 self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.sock.connect((self.host, self.port))
-                self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1) # 禁用 Nagle 算法，降低延迟
+                self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                
+                # 新增：设置 3.0 秒超时！如果 Lua 卡死，Python 会抛出 TimeoutError，而不是永远阻塞
+                self.sock.settimeout(3.0) 
+                
                 self.stream = self.sock.makefile('r', encoding='utf-8')
                 logger.info(f"Successfully connected to Balatro at {self.host}:{self.port}")
                 return

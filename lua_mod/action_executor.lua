@@ -97,43 +97,98 @@ end
 function ActionExecutor.execute_command(content)
     if not content or content == "" then return end
 
+    -- 1. 优先解析指令
+    local args = {}
+    for word in string.gmatch(content, "%S+") do table.insert(args, word) end
+    if #args == 0 then return end
+    
+    local cmd = args[1]:upper()
+    local params = {unpack(args, 2)}
+
+    Log.info("Attempting to execute: " .. content)
+
+    -- 2. 宏观特权指令：无视动画锁，强制执行
+    -- 0. 开始新游戏
+    if cmd == "START_NEW_RUN" then
+        Log.info("====== [ACTION] Triggering START_NEW_RUN ======")
+        
+        -- 核心修复：彻底移除对 G.PROFILES[...].memory 的访问，防止 nil 崩溃
+        G.SAVED_GAME = nil
+        
+        if G.FUNCS.start_run then
+            -- 构造一个不仅能“防删”，还能提供基础 config 的模拟实体
+            local mock_button = {
+                config = { 
+                    button = 'start_run', 
+                    id = 'start_run_button',
+                    save_text = false 
+                },
+                UIBox = {
+                    disable_button = function() end,
+                    get_UIE_by_ID = function() return nil end,
+                    recalculate = function() end,
+                    remove = function() end -- 关键：防止引擎尝试移除 UI 时崩溃
+                }
+            }
+            
+            -- 使用 pcall 再次包裹，即使 start_run 内部崩了，也不会带走整个游戏
+            local success, err = pcall(function()
+                G.FUNCS.start_run(mock_button)
+            end)
+            
+            if success then
+                Log.success("start_run logic dispatched successfully.")
+            else
+                Log.error("start_run ENGINE CRASH: " .. tostring(err))
+            end
+        else
+            Log.error("G.FUNCS.start_run pointer is missing!")
+        end
+        
+        return -- 必须 return，防止继续执行后续代码
+    end
+
+    -- 3. 常规局内指令动画锁
     if G.STATE_COMPLETE == false then 
         Log.warn("Animation in progress, ignoring command: " .. content)
         return 
     end
 
-    local args = {}
-    for word in string.gmatch(content, "%S+") do table.insert(args, word) end
-    if #args == 0 then return end
-    
-    local cmd = args[1]:upper()
-    local params = {unpack(args, 2)}
+    -- ================= 后续为常规指令路由 =================
 
-    Log.info("Attempting to execute: " .. content)
-
-    local args = {}
-    for word in string.gmatch(content, "%S+") do table.insert(args, word) end
-    if #args == 0 then return end
-    
-    local cmd = args[1]:upper()
-    local params = {unpack(args, 2)}
-
-    Log.info("Attempting to execute: " .. content)
-
-    -- 1. 盲注操作
+    -- 1. 盲注操作 (恢复 BFS 搜索，增加状态校验与强制日志)
     if (cmd == "SELECT_BLIND" or cmd == "SKIP_BLIND") and G.STATE == G.STATES.BLIND_SELECT then
         local blind_type = clean_string(params[1])
         local target_btn = (cmd == "SELECT_BLIND") and "select_blind" or "skip_blind"
         
-        if not blind_type or not G.GAME.round_resets.blind_states[blind_type] then return end
-        if G.GAME.round_resets.blind_states[blind_type] ~= 'Select' then return end
+        if not blind_type then 
+            Log.error("Blind action failed: No blind type provided.")
+            return 
+        end
         
+        -- 安全检查：验证盲注状态是否允许被点击
+        if G.GAME and G.GAME.round_resets and G.GAME.round_resets.blind_states then
+            local state = G.GAME.round_resets.blind_states[blind_type]
+            if state ~= 'Select' then
+                Log.error("Cannot execute " .. cmd .. " on " .. blind_type .. ": State is " .. tostring(state))
+                return
+            end
+        end
+        
+        -- 使用成熟的 BFS 抓取物理按钮
         local real_btn_node = aggressive_ui_search(target_btn)
         if real_btn_node then
             Log.success("Real UI node captured. Triggering physical execution.")
             G.FUNCS[target_btn](real_btn_node)
+        else
+            Log.warn("BFS failed to find " .. target_btn .. ". Attempting mock event.")
+            if G.FUNCS[target_btn] then
+                G.FUNCS[target_btn](create_mock_e({button = target_btn, ref_table = blind_type}))
+            else
+                Log.error(target_btn .. " function not found in G.FUNCS!")
+            end
         end
-
+        
     -- 2. 离开商店
     elseif cmd == "NEXT_ROUND" and G.STATE == G.STATES.SHOP then
         local real_btn_node = aggressive_ui_search("toggle_shop")
@@ -292,6 +347,32 @@ function ActionExecutor.execute_command(content)
             Log.success("Debug Action: Money set to $" .. amount)
         else
             Log.error("SET_MONEY failed: Invalid amount.")
+        end
+    
+    elseif cmd == "SET_HANDS_LEFT" then
+        -- 修改剩余出牌次数
+        local amount = tonumber(params[1])
+        if amount and G.GAME and G.GAME.current_round then
+            G.GAME.current_round.hands_left = amount
+            Log.info("[SUCCESS] Debug Action: Hands left set to " .. amount)
+        end
+        
+    elseif cmd == "SET_DISCARDS_LEFT" then
+        -- 修改剩余弃牌次数
+        local amount = tonumber(params[1])
+        if amount and G.GAME and G.GAME.current_round then
+            G.GAME.current_round.discards_left = amount
+            Log.info("[SUCCESS] Debug Action: Discards left set to " .. amount)
+        end
+        
+    elseif cmd == "SET_HAND_SIZE" then
+        -- 修改手牌上限 (这会立刻改变你能抽到的卡牌最大数量)
+        local amount = tonumber(params[1])
+        if amount and G.hand and G.hand.config then
+            -- Balatro 引擎需要计算差值来增减手牌槽位
+            local delta = amount - G.hand.config.card_limit
+            G.hand:change_size(delta)
+            Log.info("[SUCCESS] Debug Action: Hand size set to " .. amount)
         end
     end
 end
