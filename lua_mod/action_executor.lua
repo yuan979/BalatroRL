@@ -154,38 +154,38 @@ function ActionExecutor.execute_command(content)
         return 
     end
 
-    -- ================= 后续为常规指令路由 =================
-
-    -- 1. 盲注操作 (恢复 BFS 搜索，增加状态校验与强制日志)
     if (cmd == "SELECT_BLIND" or cmd == "SKIP_BLIND") and G.STATE == G.STATES.BLIND_SELECT then
         local blind_type = clean_string(params[1])
         local target_btn = (cmd == "SELECT_BLIND") and "select_blind" or "skip_blind"
         
-        if not blind_type then 
-            Log.error("Blind action failed: No blind type provided.")
+        -- 原版状态校验
+        if not blind_type or not G.GAME.round_resets.blind_states[blind_type] then return end
+        if G.GAME.round_resets.blind_states[blind_type] ~= 'Select' then 
+            Log.warn("Blind state is not Select, it is: " .. tostring(G.GAME.round_resets.blind_states[blind_type]))
             return 
         end
         
-        -- 安全检查：验证盲注状态是否允许被点击
-        if G.GAME and G.GAME.round_resets and G.GAME.round_resets.blind_states then
-            local state = G.GAME.round_resets.blind_states[blind_type]
-            if state ~= 'Select' then
-                Log.error("Cannot execute " .. cmd .. " on " .. blind_type .. ": State is " .. tostring(state))
-                return
-            end
-        end
-        
-        -- 使用成熟的 BFS 抓取物理按钮
+        -- 核心搜寻
         local real_btn_node = aggressive_ui_search(target_btn)
+        
         if real_btn_node then
             Log.success("Real UI node captured. Triggering physical execution.")
-            G.FUNCS[target_btn](real_btn_node)
+            local success, err = pcall(function() G.FUNCS[target_btn](real_btn_node) end)
+            if not success then Log.error("Click failed: " .. tostring(err)) end
         else
-            Log.warn("BFS failed to find " .. target_btn .. ". Attempting mock event.")
-            if G.FUNCS[target_btn] then
-                G.FUNCS[target_btn](create_mock_e({button = target_btn, ref_table = blind_type}))
+            Log.warn("BFS didn't find button (UI probably still animating). Using mock.")
+            -- 回归最简单的 Mock：传一个基础的 config 和 UIBox 防崩壳
+            -- ref_table 传入 blind_type (即 "Small", "Big")，满足引擎底层的基础校验
+            local mock_event = create_mock_e({
+                button = target_btn,
+                ref_table = blind_type
+            })
+            
+            local success, err = pcall(function() G.FUNCS[target_btn](mock_event) end)
+            if success then
+                Log.success("Mock blind selection executed.")
             else
-                Log.error(target_btn .. " function not found in G.FUNCS!")
+                Log.error("Mock crash: " .. tostring(err))
             end
         end
         

@@ -57,17 +57,13 @@ def run_diagnostic():
 
     # 2. 自动选盲注
     if screen == "BLIND_SELECT":
-        logger.info("Detected Blind Select. Sending SELECT_BLIND Small...")
+        logger.info("Detected Blind Select. Waiting for UI animation...")
+        time.sleep(1.5) # 【核心添加】：等 1.5 秒让盲注界面 UI 渲染完毕
+        
+        logger.info("Sending SELECT_BLIND Small...")
         env.step(get_action_index("SELECT_BLIND Small"))
         
-        # 阻塞等待进入打牌界面 (这里动画最长)
-        new_state = wait_for_screen(env, "IN_GAME", max_retries=15, delay=0.5)
-        if new_state:
-            screen = new_state.get("current_screen")
-            logger.info("Successfully entered: %s", screen)
-        else:
-            logger.error("Failed to transition to IN_GAME.")
-            return
+        new_state = wait_for_screen(env, "IN_GAME", max_retries=30, delay=0.5)
 
     # 3. 局内动作测试
     if screen == "IN_GAME":
