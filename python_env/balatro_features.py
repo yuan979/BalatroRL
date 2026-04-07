@@ -54,24 +54,36 @@ def extract_global_scalars(raw_state: dict) -> np.ndarray:
         return np.zeros(7, dtype=np.float32)
 
     stats = raw_state.get("stats", {})
-    blinds = raw_state.get("blinds", {})
     
-    money = min(stats.get("money", 0), MAX_MONEY) / MAX_MONEY
-    hands_left = stats.get("hands_left", 0) / 10.0
-    discards_left = stats.get("discards_left", 0) / 10.0
-    ante = stats.get("ante", 1) / MAX_ANTE
-    
-    current_chips = np.log1p(stats.get("chips", 0))
-    
-    current_blind = blinds.get("current_blind", {})
-    target_chips = np.log1p(current_blind.get("target_score", 0)) if current_blind else 0.0
-    
-    score_ratio = 0.0
-    if stats.get("chips", 0) > 0 and current_blind:
-        raw_target = max(1, current_blind.get("target_score", 1))
-        score_ratio = min(stats.get("chips", 0) / raw_target, 1.0)
+    if isinstance(stats, list):
+        stats = {}
 
-    return np.array([money, hands_left, discards_left, ante, current_chips, target_chips, score_ratio], dtype=np.float32)
+    money = min(float(stats.get("money", 0)), MAX_MONEY) / MAX_MONEY
+    hands_left = float(stats.get("hands_left", 0)) / 10.0
+    discards_left = float(stats.get("discards_left", 0)) / 10.0
+    ante = float(stats.get("ante", 1)) / MAX_ANTE
+    
+    # 直接从 stats 获取筹码和目标，与 state_extractor.lua 完美对齐
+    raw_chips = float(stats.get("current_chips", 0))
+    raw_target = float(stats.get("blind_target", 0))
+    
+    current_chips_log = np.log1p(max(0, raw_chips))
+    target_chips_log = np.log1p(max(0, raw_target))
+    
+    # 计算当前得分比例，上限为 1.0
+    score_ratio = 0.0
+    if raw_chips > 0 and raw_target > 0:
+        score_ratio = min(raw_chips / raw_target, 1.0)
+
+    return np.array([
+        money, 
+        hands_left, 
+        discards_left, 
+        ante, 
+        current_chips_log, 
+        target_chips_log, 
+        score_ratio
+    ], dtype=np.float32)
 
 
 def extract_hand_features(raw_state: dict) -> np.ndarray:

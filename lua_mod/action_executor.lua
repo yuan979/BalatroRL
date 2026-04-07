@@ -2,6 +2,9 @@ local ActionExecutor = {}
 
 local Log = { info = print, warn = print, error = print, success = print, debug = print }
 
+local last_macro_time = 0
+local MACRO_COOLDOWN = 3.0
+
 function ActionExecutor.init(logger_instance)
     if logger_instance then Log = logger_instance end
 end
@@ -104,6 +107,17 @@ function ActionExecutor.execute_command(content)
     
     local cmd = args[1]:upper()
     local params = {unpack(args, 2)}
+
+    local is_macro_action = (cmd == "START_NEW_RUN" or cmd == "SELECT_BLIND" or cmd == "SKIP_BLIND" or cmd == "NEXT_ROUND" or cmd == "CASH_OUT" or cmd == "SKIP_PACK" or cmd == "SELECT_PACK_CARD")
+    
+    if is_macro_action then
+        local current_time = os.clock()
+        if current_time - last_macro_time < MACRO_COOLDOWN then
+            Log.warn("Machine-gun prevention! Dropping spammed macro action: " .. cmd)
+            return
+        end
+        last_macro_time = current_time
+    end
 
     Log.info("Attempting to execute: " .. content)
 
