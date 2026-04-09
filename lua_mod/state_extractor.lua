@@ -8,6 +8,7 @@ local function get_game_state_unsafe(CardExtractor)
     -- 这样 Python 端的 old_stats.get("ante") 就永远不会报错
     local safe_skeleton = {
         current_screen = "MAIN_MENU",
+        last_action_invalid = false,
         stats = { 
             money = 0, 
             ante = 1, 
@@ -141,7 +142,7 @@ local function get_game_state_unsafe(CardExtractor)
 
     return {
         current_screen = current_screen, stats = stats, blinds = blinds, shop = shop, jokers = jokers,
-        consumables = consumables, hand = hand, pack_choices = pack_choices
+        consumables = consumables, hand = hand, pack_choices = pack_choices, last_action_invalid = G.last_action_invalid or false
     }
 end
 
@@ -158,6 +159,7 @@ function StateExtractor.get_game_state(CardExtractor)
         -- 同样在错误回调中提供带有默认 stats 的空壳
         return {
             current_screen = "MAIN_MENU",
+            last_action_invalid = false,
             stats = { money = 0, ante = 1, round = 1, hands_left = 0, discards_left = 0, current_chips = 0, blind_target = 0 },
             blinds = {}, shop = {}, jokers = {}, consumables = {}, hand = {}, pack_choices = {}
         }

@@ -9,6 +9,7 @@ from balatro_features import build_observation_space, extract_features
 from balatro_reward import calculate_reward
 
 logger = logging.getLogger("BalatroEnv")
+logging.basicConfig(level=logging.DEBUG)
 
 class BalatroEnv(gym.Env):
     def __init__(self):
@@ -113,7 +114,6 @@ class BalatroEnv(gym.Env):
             logger.info(f"Episode forcibly truncated after {self.max_steps} steps to prevent locking.")
 
         terminated = self.current_raw_state.get("current_screen") == "GAME_OVER"
-        truncated = False
         
         info = {
             "raw_state": self.current_raw_state,
