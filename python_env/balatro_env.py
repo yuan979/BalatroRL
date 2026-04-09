@@ -18,6 +18,8 @@ class BalatroEnv(gym.Env):
         self.observation_space = build_observation_space()
         self.selected_hand_indices = set()
         self.current_raw_state = {}
+        self.current_step = 0
+        self.max_steps = 500
 
     def _invalid_action_response(self):
         obs = extract_features(self.current_raw_state)
@@ -31,6 +33,7 @@ class BalatroEnv(gym.Env):
         super().reset(seed=seed)
         self.selected_hand_indices.clear()
         
+        self.current_step = 0
         self.current_raw_state = self.ipc.send_action_and_get_state("GET_STATE")
         current_screen = self.current_raw_state.get("current_screen")
         
@@ -52,6 +55,7 @@ class BalatroEnv(gym.Env):
         return obs, info
 
     def step(self, action):
+        self.current_step += 1
         action_name = ACTION_MAPPING.get(action, None)
         if action_name is None:
             raise ValueError(f"Invalid action index: {action}")
@@ -102,6 +106,12 @@ class BalatroEnv(gym.Env):
             logger.debug(f"[Penalty] Lua rejected action: {lua_cmd}")
         else:
             reward = calculate_reward(old_raw_state, self.current_raw_state)
+            
+        truncated = False
+        if self.current_step >= self.max_steps:
+            truncated = True
+            logger.info(f"Episode forcibly truncated after {self.max_steps} steps to prevent locking.")
+
         terminated = self.current_raw_state.get("current_screen") == "GAME_OVER"
         truncated = False
         
