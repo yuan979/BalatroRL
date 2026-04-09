@@ -1,3 +1,5 @@
+import datetime
+import uuid
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
@@ -11,7 +13,8 @@ class BalatroDreamerWrapper(gym.Wrapper):
     def __init__(self, env_id=0):
         env = BalatroEnv()
         super().__init__(env)
-        self.id = env_id
+        timestamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+        self.id = f"{timestamp}-{uuid.uuid4().hex}"
         
         # 直接获取我们已经拼好的 state 维度 (631)
         dim = env.observation_space.spaces["state"].shape[0]

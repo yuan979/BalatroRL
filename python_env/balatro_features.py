@@ -18,8 +18,11 @@ MAX_JOKERS = 10      # 小丑牌上限
 PLAYING_CARD_DIM = 24  # 每张手牌的特征数
 JOKER_DIM = 12         # 每张小丑的特征数
 
-# [新增] 计算总维度: 7(全局) + 21*24(手牌) + 10*12(小丑) = 631
-TOTAL_FEATURE_DIM = 7 + (MAX_HAND_SIZE * PLAYING_CARD_DIM) + (MAX_JOKERS * JOKER_DIM)
+SCREEN_LIST = ["IN_GAME", "BLIND_SELECT", "SHOP", "ROUND_EVAL", "OPENING_PACK", "GAME_OVER", "MAIN_MENU"]
+SCREEN_DIM = len(SCREEN_LIST)  # 7
+
+# 计算总维度: 7(全局) + 7(屏幕one-hot) + 21*24(手牌) + 10*12(小丑) = 638
+TOTAL_FEATURE_DIM = 7 + SCREEN_DIM + (MAX_HAND_SIZE * PLAYING_CARD_DIM) + (MAX_JOKERS * JOKER_DIM)
 
 # ==========================================
 # 辅助编码函数
@@ -52,6 +55,15 @@ def get_edition_one_hot(edition_str: str) -> list:
 # ==========================================
 # 核心解析逻辑
 # ==========================================
+def extract_screen_one_hot(raw_state: dict) -> np.ndarray:
+    """将 current_screen 编码为 7 维 one-hot"""
+    vec = np.zeros(SCREEN_DIM, dtype=np.float32)
+    screen = raw_state.get("current_screen", "")
+    if screen in SCREEN_LIST:
+        vec[SCREEN_LIST.index(screen)] = 1.0
+    return vec
+
+
 def extract_global_scalars(raw_state: dict) -> np.ndarray:
     if raw_state.get("current_screen") not in ["IN_GAME", "BLIND_SELECT", "SHOP", "ROUND_EVAL"]:
         return np.zeros(7, dtype=np.float32)
@@ -142,7 +154,7 @@ def extract_joker_features(raw_state: dict) -> np.ndarray:
 def build_observation_space() -> spaces.Dict:
     """
     正式的 Gym Observation Space。
-    [修改点]：统一为一个名为 'state' 的 631 维一维向量 (Box)。
+    [修改点]：统一为一个名为 'state' 的 638 维一维向量 (Box)。
     """
     obs_space = spaces.Dict({
         "state": spaces.Box(low=-1.0, high=100.0, shape=(TOTAL_FEATURE_DIM,), dtype=np.float32)
@@ -155,16 +167,17 @@ def extract_features(raw_state: dict) -> dict:
     顶层接口：将 raw JSON dict 转化为符合 observation_space 的字典。
     [修改点]：将所有特征展平并拼接在一起。
     """
-    global_feats = extract_global_scalars(raw_state)
-    
+    global_feats = extract_global_scalars(raw_state)       # 7
+    screen_feats = extract_screen_one_hot(raw_state)       # 7
+
     # 将二维矩阵展平为一维向量: (21, 24) -> (504,)
     hand_feats = extract_hand_features(raw_state).flatten()
-    
+
     # 将二维矩阵展平为一维向量: (10, 12) -> (120,)
     joker_feats = extract_joker_features(raw_state).flatten()
-    
-    # 拼接: 7 + 504 + 120 = 631
-    state_vector = np.concatenate([global_feats, hand_feats, joker_feats], axis=0)
+
+    # 拼接: 7 + 7 + 504 + 120 = 638
+    state_vector = np.concatenate([global_feats, screen_feats, hand_feats, joker_feats], axis=0)
     
     return {
         "state": state_vector

@@ -21,6 +21,11 @@ class BalatroEnv(gym.Env):
         self.current_raw_state = {}
         self.current_step = 0
         self.max_steps = 500
+        self.steps_without_progress = 0
+        self.idle_threshold = 20        # 连续多少步无进展开始惩罚
+        self.idle_penalty_per_step = 0.05  # 每步额外惩罚（超出阈值后）
+        self.consecutive_invalid = 0
+        self.max_consecutive_invalid = 30  # 连续无效动作超过此值直接截断
 
     def _invalid_action_response(self):
         obs = extract_features(self.current_raw_state)
@@ -35,6 +40,8 @@ class BalatroEnv(gym.Env):
         self.selected_hand_indices.clear()
         
         self.current_step = 0
+        self.steps_without_progress = 0
+        self.consecutive_invalid = 0
         self.current_raw_state = self.ipc.send_action_and_get_state("GET_STATE")
         current_screen = self.current_raw_state.get("current_screen")
         
@@ -79,14 +86,20 @@ class BalatroEnv(gym.Env):
             }
             return obs, 0.0, False, False, info
 
-        stats = self.current_raw_state.get("stats", {})
-        
-        if action_name == "PLAY":
-            if stats.get("hands_left", 0) <= 0 or len(self.selected_hand_indices) == 0:
-                return self._invalid_action_response()
-        elif action_name == "DISCARD":
-            if stats.get("discards_left", 0) <= 0 or len(self.selected_hand_indices) == 0:
-                return self._invalid_action_response()
+        # Python 层 action mask 强制拦截：不合法动作直接拒，不发给 Lua
+        current_mask = get_action_mask(self.current_raw_state, self.selected_hand_indices)
+        if not current_mask[action]:
+            self.consecutive_invalid += 1
+            penalty = min(0.5 + self.consecutive_invalid * 0.05, 3.0)
+            logger.debug(f"[Mask Blocked] ({self.consecutive_invalid}x) action={action_name}, penalty={penalty:.2f}")
+            obs = extract_features(self.current_raw_state)
+            truncated = self.consecutive_invalid >= self.max_consecutive_invalid
+            if truncated:
+                logger.warning(f"Episode truncated: {self.consecutive_invalid} consecutive invalid actions.")
+            return obs, -penalty, False, truncated, {
+                "raw_state": self.current_raw_state,
+                "action_mask": current_mask,
+            }
 
         lua_cmd = action_name
         if action_name in ["PLAY", "DISCARD"] or action_name.startswith("USE_CONSUMABLE"):
@@ -103,15 +116,43 @@ class BalatroEnv(gym.Env):
         is_lua_invalid = self.current_raw_state.get("last_action_invalid", False)
 
         if is_lua_invalid:
-            reward = -0.5  
-            logger.debug(f"[Penalty] Lua rejected action: {lua_cmd}")
+            self.consecutive_invalid += 1
+            penalty = min(0.5 + self.consecutive_invalid * 0.05, 3.0)  # 递增，上限3.0
+            reward = -penalty
+            logger.debug(f"[Penalty] Lua rejected ({self.consecutive_invalid}x): {lua_cmd}, penalty={penalty:.2f}")
         else:
+            self.consecutive_invalid = 0
             reward = calculate_reward(old_raw_state, self.current_raw_state)
+
+        # 无进展惩罚：检测关键状态是否发生变化
+        def _progress_key(s):
+            stats = s.get("stats", {})
+            if isinstance(stats, list): stats = {}
+            return (
+                s.get("current_screen"),
+                stats.get("current_chips"),
+                stats.get("money"),
+                stats.get("ante"),
+                len(s.get("jokers", [])),
+            )
+
+        if _progress_key(old_raw_state) == _progress_key(self.current_raw_state):
+            self.steps_without_progress += 1
+        else:
+            self.steps_without_progress = 0
+
+        if self.steps_without_progress > self.idle_threshold:
+            idle_penalty = self.idle_penalty_per_step * (self.steps_without_progress - self.idle_threshold)
+            reward -= idle_penalty
+            logger.debug(f"[Idle Penalty] {self.steps_without_progress} steps stalled, penalty={idle_penalty:.3f}")
             
         truncated = False
         if self.current_step >= self.max_steps:
             truncated = True
-            logger.info(f"Episode forcibly truncated after {self.max_steps} steps to prevent locking.")
+            logger.info(f"Episode truncated: max_steps={self.max_steps} reached.")
+        elif self.consecutive_invalid >= self.max_consecutive_invalid:
+            truncated = True
+            logger.warning(f"Episode truncated: {self.consecutive_invalid} consecutive invalid actions.")
 
         terminated = self.current_raw_state.get("current_screen") == "GAME_OVER"
         
