@@ -13,12 +13,8 @@ class BalatroDreamerWrapper(gym.Wrapper):
         super().__init__(env)
         self.id = env_id
         
-        orig = env.observation_space.spaces
-        dim = (
-            orig["global_scalars"].shape[0] +
-            np.prod(orig["hand_cards"].shape) +
-            np.prod(orig["jokers"].shape)
-        )
+        # 直接获取我们已经拼好的 state 维度 (631)
+        dim = env.observation_space.spaces["state"].shape[0]
         
         self.observation_space = spaces.Dict({
             'state': spaces.Box(low=-10.0, high=100.0, shape=(dim,), dtype=np.float32),
@@ -33,14 +29,9 @@ class BalatroDreamerWrapper(gym.Wrapper):
         )
         self.action_space.discrete = True
         
-    def _flatten(self, obs, is_first, is_terminal):
-        flat_vec = np.concatenate([
-            obs["global_scalars"],
-            obs["hand_cards"].flatten(),
-            obs["jokers"].flatten()
-        ]).astype(np.float32)
+    def _format_obs(self, obs, is_first, is_terminal):
         return {
-            "state": flat_vec,
+            "state": obs["state"],
             "is_first": np.array(is_first, dtype=bool),
             "is_terminal": np.array(is_terminal, dtype=bool),
             "image": np.zeros((64, 64, 3), dtype=np.uint8)
@@ -48,7 +39,7 @@ class BalatroDreamerWrapper(gym.Wrapper):
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        return self._flatten(obs, is_first=True, is_terminal=False)
+        return self._format_obs(obs, is_first=True, is_terminal=False)
         
     def step(self, action):
         if isinstance(action, dict):
@@ -64,4 +55,7 @@ class BalatroDreamerWrapper(gym.Wrapper):
             
         obs, reward, terminated, truncated, info = self.env.step(action_idx)
         done = terminated or truncated
-        return self._flatten(obs, is_first=False, is_terminal=done), float(reward), done, info
+        
+        safe_info = {}
+        
+        return self._format_obs(obs, is_first=False, is_terminal=done), float(reward), done, safe_info

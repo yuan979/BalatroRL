@@ -110,8 +110,7 @@ class BalatroEnv(gym.Env):
             "action_mask": get_action_mask(self.current_raw_state, self.selected_hand_indices)
         }
 
-        done = terminated or truncated
-        return obs, reward, done, info
+        return obs, reward, terminated, truncated, info
 
     def render(self): pass
     
