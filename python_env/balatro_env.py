@@ -61,9 +61,12 @@ class BalatroEnv(gym.Env):
             if idx in self.selected_hand_indices:
                 self.selected_hand_indices.remove(idx)
             else:
-                self.selected_hand_indices.add(idx)
+                if len(self.selected_hand_indices) < 5:
+                    self.selected_hand_indices.add(idx)
+                else:
+                    return self._invalid_action_response()
             
-            obs = extract_features(self.current_raw_state)
+            obs = extract_features(self.current_raw_state)        
             info = {
                 "raw_state": self.current_raw_state,
                 "action_mask": get_action_mask(self.current_raw_state, self.selected_hand_indices),
@@ -92,7 +95,13 @@ class BalatroEnv(gym.Env):
         self.current_raw_state = self.ipc.send_action_and_get_state(lua_cmd)
 
         obs = extract_features(self.current_raw_state)
-        reward = calculate_reward(old_raw_state, self.current_raw_state)
+        is_lua_invalid = self.current_raw_state.get("last_action_invalid", False)
+
+        if is_lua_invalid:
+            reward = -0.5  
+            logger.debug(f"[Penalty] Lua rejected action: {lua_cmd}")
+        else:
+            reward = calculate_reward(old_raw_state, self.current_raw_state)
         terminated = self.current_raw_state.get("current_screen") == "GAME_OVER"
         truncated = False
         
@@ -101,7 +110,8 @@ class BalatroEnv(gym.Env):
             "action_mask": get_action_mask(self.current_raw_state, self.selected_hand_indices)
         }
 
-        return obs, reward, terminated, truncated, info
+        done = terminated or truncated
+        return obs, reward, done, info
 
     def render(self): pass
     

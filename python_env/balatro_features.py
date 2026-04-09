@@ -10,13 +10,16 @@ logger = logging.getLogger("FeatureExtractor")
 MAX_MONEY = 400.0
 MAX_ANTE = 8.0
 
-# 矩阵最大尺寸 (超过部分会被截断，不足会补零)
+# 矩阵最大尺寸
 MAX_HAND_SIZE = 21   # 手牌上限 (考虑到各种增加上限的 Buff)
 MAX_JOKERS = 10      # 小丑牌上限
 
 # 特征向量长度
 PLAYING_CARD_DIM = 24  # 每张手牌的特征数
 JOKER_DIM = 12         # 每张小丑的特征数
+
+# [新增] 计算总维度: 7(全局) + 21*24(手牌) + 10*12(小丑) = 631
+TOTAL_FEATURE_DIM = 7 + (MAX_HAND_SIZE * PLAYING_CARD_DIM) + (MAX_JOKERS * JOKER_DIM)
 
 # ==========================================
 # 辅助编码函数
@@ -63,7 +66,7 @@ def extract_global_scalars(raw_state: dict) -> np.ndarray:
     discards_left = float(stats.get("discards_left", 0)) / 10.0
     ante = float(stats.get("ante", 1)) / MAX_ANTE
     
-    # 直接从 stats 获取筹码和目标，与 state_extractor.lua 完美对齐
+    # 直接从 stats 获取筹码和目标
     raw_chips = float(stats.get("current_chips", 0))
     raw_target = float(stats.get("blind_target", 0))
     
@@ -87,58 +90,44 @@ def extract_global_scalars(raw_state: dict) -> np.ndarray:
 
 
 def extract_hand_features(raw_state: dict) -> np.ndarray:
-    """
-    解析手牌，生成形状为 [MAX_HAND_SIZE, PLAYING_CARD_DIM] 的二维张量
-    """
+    """解析手牌，生成形状为 [MAX_HAND_SIZE, PLAYING_CARD_DIM] 的二维张量"""
     hand_matrix = np.zeros((MAX_HAND_SIZE, PLAYING_CARD_DIM), dtype=np.float32)
     hand_cards = raw_state.get("hand", [])
     
     for i, card in enumerate(hand_cards):
         if i >= MAX_HAND_SIZE: break
         
-        # 1. 基础属性
         rank_val = get_rank_val(card.get("base", {}).get("value", ""))
         suit_vec = get_suit_one_hot(card.get("base", {}).get("suit", ""))
         
-        # 2. 数值加成 (筹码, 加法倍率, 乘法倍率) 
-        # 为了防爆，使用 log1p 或直接缩小倍数
         chips = np.log1p(card.get("ability", {}).get("bonus_chips", 0))
         mult = np.log1p(card.get("ability", {}).get("mult", 0))
         x_mult = card.get("ability", {}).get("x_mult", 1) / 10.0
         
-        # 3. 增强与版本
         edition_vec = get_edition_one_hot(card.get("edition", ""))
         
-        # 组装这根 24 维的向量 (目前实际用了 10+ 维，剩下的预留给塔罗牌强化、封印等机制)
         feature_list = [rank_val] + suit_vec + [chips, mult, x_mult] + edition_vec
-        
-        # 填充到矩阵中
         hand_matrix[i, :len(feature_list)] = feature_list
         
     return hand_matrix
 
 
 def extract_joker_features(raw_state: dict) -> np.ndarray:
-    """
-    解析小丑牌，生成形状为 [MAX_JOKERS, JOKER_DIM] 的二维张量
-    """
+    """解析小丑牌，生成形状为 [MAX_JOKERS, JOKER_DIM] 的二维张量"""
     joker_matrix = np.zeros((MAX_JOKERS, JOKER_DIM), dtype=np.float32)
     jokers = raw_state.get("jokers", [])
     
     for i, joker in enumerate(jokers):
         if i >= MAX_JOKERS: break
         
-        # 1. 经济与稀有度
         cost = joker.get("cost", 0) / 20.0
         sell_cost = joker.get("sell_cost", 0) / 20.0
-        rarity = joker.get("config", {}).get("center", {}).get("rarity", 1) / 4.0 # 1-Common, 4-Legendary
+        rarity = joker.get("config", {}).get("center", {}).get("rarity", 1) / 4.0 
         
-        # 2. 显式能力值 (引擎导出的显式筹码和倍率加成)
         chips = np.log1p(joker.get("ability", {}).get("extra", {}).get("chips", 0) if isinstance(joker.get("ability", {}).get("extra"), dict) else 0)
         mult = np.log1p(joker.get("ability", {}).get("extra", {}).get("mult", 0) if isinstance(joker.get("ability", {}).get("extra"), dict) else 0)
         x_mult = (joker.get("ability", {}).get("extra", {}).get("Xmult", 1) if isinstance(joker.get("ability", {}).get("extra"), dict) else 1) / 5.0
         
-        # 3. 版本
         edition_vec = get_edition_one_hot(joker.get("edition", ""))
         
         feature_list = [cost, sell_cost, rarity, chips, mult, x_mult] + edition_vec
@@ -147,25 +136,41 @@ def extract_joker_features(raw_state: dict) -> np.ndarray:
     return joker_matrix
 
 
+# ==========================================
+# 适配 DreamerV3 的顶层接口 (核心修改区)
+# ==========================================
 def build_observation_space() -> spaces.Dict:
-    """正式的 Gym Observation Space"""
+    """
+    正式的 Gym Observation Space。
+    [修改点]：统一为一个名为 'state' 的 631 维一维向量 (Box)。
+    """
     obs_space = spaces.Dict({
-        "global_scalars": spaces.Box(low=-1.0, high=100.0, shape=(7,), dtype=np.float32),
-        "hand_cards": spaces.Box(low=-1.0, high=100.0, shape=(MAX_HAND_SIZE, PLAYING_CARD_DIM), dtype=np.float32),
-        "jokers": spaces.Box(low=-1.0, high=100.0, shape=(MAX_JOKERS, JOKER_DIM), dtype=np.float32),
+        "state": spaces.Box(low=-1.0, high=100.0, shape=(TOTAL_FEATURE_DIM,), dtype=np.float32)
     })
     return obs_space
 
 
 def extract_features(raw_state: dict) -> dict:
-    """顶层接口：将 raw JSON dict 转化为符合 observation_space 的字典"""
+    """
+    顶层接口：将 raw JSON dict 转化为符合 observation_space 的字典。
+    [修改点]：将所有特征展平并拼接在一起。
+    """
+    global_feats = extract_global_scalars(raw_state)
+    
+    # 将二维矩阵展平为一维向量: (21, 24) -> (504,)
+    hand_feats = extract_hand_features(raw_state).flatten()
+    
+    # 将二维矩阵展平为一维向量: (10, 12) -> (120,)
+    joker_feats = extract_joker_features(raw_state).flatten()
+    
+    # 拼接: 7 + 504 + 120 = 631
+    state_vector = np.concatenate([global_feats, hand_feats, joker_feats], axis=0)
+    
     return {
-        "global_scalars": extract_global_scalars(raw_state),
-        "hand_cards": extract_hand_features(raw_state),
-        "jokers": extract_joker_features(raw_state)
+        "state": state_vector
     }
 
-# =================测试逻辑=================
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
     
@@ -184,7 +189,8 @@ if __name__ == "__main__":
     
     features = extract_features(mock_state)
     
-    logger.info("Global features shape: %s", features['global_scalars'].shape)
-    logger.info("Hand matrix shape: %s (Current cards: %d)", features['hand_cards'].shape, len(mock_state['hand']))
-    logger.info("Joker matrix shape: %s (Current jokers: %d)", features['jokers'].shape, len(mock_state['jokers']))
-    logger.info("Simulated King of Hearts (Foil) vector slice: %s", features['hand_cards'][0][:10])
+    logger.info("Final Observation Keys: %s", features.keys())
+    logger.info("Final 'state' vector shape: %s", features['state'].shape)
+    
+    assert features['state'].shape == (TOTAL_FEATURE_DIM,), f"Expected shape ({TOTAL_FEATURE_DIM},), got {features['state'].shape}"
+    logger.info("Successfully flattened! The vector is ready for DreamerV3.")
