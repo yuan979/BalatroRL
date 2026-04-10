@@ -9,7 +9,7 @@ from balatro_features import build_observation_space, extract_features
 from balatro_reward import calculate_reward
 
 logger = logging.getLogger("BalatroEnv")
-logging.basicConfig(level=logging.DEBUG)
+# logging.basicConfig(level=logging.DEBUG)
 
 class BalatroEnv(gym.Env):
     def __init__(self):
@@ -26,9 +26,13 @@ class BalatroEnv(gym.Env):
         self.idle_penalty_per_step = 0.05  # 每步额外惩罚（超出阈值后）
         self.consecutive_invalid = 0
         self.max_consecutive_invalid = 30  # 连续无效动作超过此值直接截断
+        self._play_discard_cooldown = 0    # Lua拒绝PLAY/DISCARD后短暂屏蔽，防止在非SELECTING_HAND状态反复发送
 
     def _get_obs(self):
         mask = get_action_mask(self.current_raw_state, self.selected_hand_indices)
+        if self._play_discard_cooldown > 0:
+            mask[0] = False  # PLAY
+            mask[1] = False  # DISCARD
         obs = extract_features(self.current_raw_state, self.selected_hand_indices, mask)
         return obs, mask
 
@@ -43,6 +47,7 @@ class BalatroEnv(gym.Env):
         self.current_step = 0
         self.steps_without_progress = 0
         self.consecutive_invalid = 0
+        self._play_discard_cooldown = 0
         self.current_raw_state = self.ipc.send_action_and_get_state("GET_STATE")
         current_screen = self.current_raw_state.get("current_screen")
         
@@ -102,13 +107,33 @@ class BalatroEnv(gym.Env):
                 "action_mask": current_mask,
             }
 
+        # Convert Python action name (CMD_TYPE_N) to Lua command format (CMD_TYPE N [targets])
+        _SLOT_CMDS = {
+            "BUY_CARD_": "BUY_CARD", "BUY_VOUCHER_": "BUY_VOUCHER",
+            "BUY_BOOSTER_": "BUY_BOOSTER", "USE_CONSUMABLE_": "USE_CONSUMABLE",
+            "SELL_JOKER_": "SELL_JOKER", "SELL_CONSUMABLE_": "SELL_CONSUMABLE",
+            "SELECT_PACK_CARD_": "SELECT_PACK_CARD",
+        }
         lua_cmd = action_name
-        if action_name in ["PLAY", "DISCARD"] or action_name.startswith("USE_CONSUMABLE"):
-            if len(self.selected_hand_indices) > 0:
-                sorted_idx = sorted(list(self.selected_hand_indices))
-                idx_str = " ".join(map(str, sorted_idx))
-                lua_cmd = f"{action_name} {idx_str}"
-            self.selected_hand_indices.clear()
+        for prefix, lua_base in _SLOT_CMDS.items():
+            if action_name.startswith(prefix):
+                slot = action_name[len(prefix):]
+                if lua_base == "USE_CONSUMABLE" and self.selected_hand_indices:
+                    targets = " ".join(map(str, sorted(self.selected_hand_indices)))
+                    lua_cmd = f"{lua_base} {slot} {targets}"
+                    self.selected_hand_indices.clear()
+                else:
+                    lua_cmd = f"{lua_base} {slot}"
+                break
+        else:
+            if action_name in ["PLAY", "DISCARD"]:
+                if self.selected_hand_indices:
+                    idx_str = " ".join(map(str, sorted(self.selected_hand_indices)))
+                    lua_cmd = f"{action_name} {idx_str}"
+                self.selected_hand_indices.clear()
+
+        if self._play_discard_cooldown > 0:
+            self._play_discard_cooldown -= 1
 
         old_raw_state = self.current_raw_state
         self.current_raw_state = self.ipc.send_action_and_get_state(lua_cmd)
@@ -122,6 +147,8 @@ class BalatroEnv(gym.Env):
             penalty = min(0.5 + self.consecutive_invalid * 0.05, 3.0)  # 递增，上限3.0
             reward = -penalty
             logger.debug(f"[Penalty] Lua rejected ({self.consecutive_invalid}x): {lua_cmd}, penalty={penalty:.2f}")
+            if lua_cmd.startswith(("PLAY", "DISCARD")):
+                self._play_discard_cooldown = 4  # 屏蔽4步，等待游戏回到SELECTING_HAND
         else:
             self.consecutive_invalid = 0
             reward = calculate_reward(old_raw_state, self.current_raw_state)

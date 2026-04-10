@@ -33,6 +33,7 @@ class BalatroIPC:
     def disconnect(self):
         if self.stream:
             self.stream.close()
+            self.stream = None
         if self.sock:
             self.sock.close()
             self.sock = None

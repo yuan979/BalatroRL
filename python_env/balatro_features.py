@@ -182,7 +182,7 @@ def extract_selection_features(selected_hand_indices: set) -> np.ndarray:
 def extract_features(raw_state: dict, selected_hand_indices: set = None, action_mask: np.ndarray = None) -> dict:
     """
     顶层接口：将 raw JSON dict 转化为符合 observation_space 的字典。
-    包含选牌状态 (22 dims) 和动作掩码 (74 dims)，总计 734 维。
+    包含选牌状态 (22 dims) 和动作掩码 (74 dims)，总计 462 维。
     """
     if selected_hand_indices is None:
         selected_hand_indices = set()
@@ -191,8 +191,8 @@ def extract_features(raw_state: dict, selected_hand_indices: set = None, action_
 
     global_feats = extract_global_scalars(raw_state)                        # 7
     screen_feats = extract_screen_one_hot(raw_state)                        # 7
-    hand_feats = extract_hand_features(raw_state).flatten()                 # 504
-    joker_feats = extract_joker_features(raw_state).flatten()               # 120
+    hand_feats = extract_hand_features(raw_state).flatten()                 # 252
+    joker_feats = extract_joker_features(raw_state).flatten()               # 100
     selection_feats = extract_selection_features(selected_hand_indices)     # 22
     mask_feats = action_mask.astype(np.float32)                             # 74
 

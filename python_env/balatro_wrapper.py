@@ -16,14 +16,13 @@ class BalatroDreamerWrapper(gym.Wrapper):
         timestamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
         self.id = f"{timestamp}-{uuid.uuid4().hex}"
         
-        # 直接获取我们已经拼好的 state 维度 (631)
         dim = env.observation_space.spaces["state"].shape[0]
-        
+
         self.observation_space = spaces.Dict({
-            'state': spaces.Box(low=-10.0, high=100.0, shape=(dim,), dtype=np.float32),
+            'state': spaces.Box(low=-1.0, high=100.0, shape=(dim,), dtype=np.float32),
             'is_first': spaces.Box(low=0, high=1, shape=(), dtype=bool),
             'is_terminal': spaces.Box(low=0, high=1, shape=(), dtype=bool),
-            'image': spaces.Box(low=0, high=255, shape=(64, 64, 3), dtype=np.uint8)
+            # 'image': spaces.Box(low=0, high=255, shape=(64, 64, 3), dtype=np.uint8)
         })
         
         self._num_actions = env.action_space.n
@@ -58,7 +57,7 @@ class BalatroDreamerWrapper(gym.Wrapper):
             
         obs, reward, terminated, truncated, info = self.env.step(action_idx)
         done = terminated or truncated
-        
+
         safe_info = {}
-        
-        return self._format_obs(obs, is_first=False, is_terminal=done), float(reward), done, safe_info
+
+        return self._format_obs(obs, is_first=False, is_terminal=terminated), float(reward), done, safe_info
