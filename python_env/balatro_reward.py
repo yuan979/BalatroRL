@@ -63,8 +63,8 @@ def calculate_reward(old_state: dict, new_state: dict) -> float:
         reward += 10.0
         logger.info(f"Milestone! Ante {old_ante} -> {new_ante}. Reward +10")
 
-    if new_state.get("invalid_action", False):
-        reward -= 0.5 
+    if new_state.get("last_action_invalid", False):
+        reward -= 0.5
         logger.debug("Penalty: AI attempted an invalid action.")
 
     return reward

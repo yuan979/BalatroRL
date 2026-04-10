@@ -27,13 +27,14 @@ class BalatroEnv(gym.Env):
         self.consecutive_invalid = 0
         self.max_consecutive_invalid = 30  # 连续无效动作超过此值直接截断
 
+    def _get_obs(self):
+        mask = get_action_mask(self.current_raw_state, self.selected_hand_indices)
+        obs = extract_features(self.current_raw_state, self.selected_hand_indices, mask)
+        return obs, mask
+
     def _invalid_action_response(self):
-        obs = extract_features(self.current_raw_state)
-        info = {
-            "raw_state": self.current_raw_state,
-            "action_mask": get_action_mask(self.current_raw_state, self.selected_hand_indices)
-        }
-        return obs, -0.1, False, False, info
+        obs, mask = self._get_obs()
+        return obs, -0.1, False, False, {"raw_state": self.current_raw_state, "action_mask": mask}
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -55,12 +56,8 @@ class BalatroEnv(gym.Env):
                 if self.current_raw_state.get("current_screen") in ["IN_GAME", "BLIND_SELECT", "SHOP"]:
                     break
                     
-        obs = extract_features(self.current_raw_state)
-        info = {
-            "raw_state": self.current_raw_state,
-            "action_mask": get_action_mask(self.current_raw_state, self.selected_hand_indices)
-        }
-        return obs, info
+        obs, mask = self._get_obs()
+        return obs, {"raw_state": self.current_raw_state, "action_mask": mask}
 
     def step(self, action):
         self.current_step += 1
@@ -76,15 +73,19 @@ class BalatroEnv(gym.Env):
                 if len(self.selected_hand_indices) < 5:
                     self.selected_hand_indices.add(idx)
                 else:
-                    return self._invalid_action_response()
-            
-            obs = extract_features(self.current_raw_state)        
-            info = {
-                "raw_state": self.current_raw_state,
-                "action_mask": get_action_mask(self.current_raw_state, self.selected_hand_indices),
-                "internal_selection": list(self.selected_hand_indices)
-            }
-            return obs, 0.0, False, False, info
+                    # Bug 4 fix: 6th card toggle counts as invalid like all other invalid actions
+                    self.consecutive_invalid += 1
+                    penalty = min(0.5 + self.consecutive_invalid * 0.05, 3.0)
+                    obs, mask = self._get_obs()
+                    truncated = self.consecutive_invalid >= self.max_consecutive_invalid
+                    if truncated:
+                        logger.warning(f"Episode truncated: {self.consecutive_invalid} consecutive invalid actions.")
+                    return obs, -penalty, False, truncated, {"raw_state": self.current_raw_state, "action_mask": mask}
+
+            # Bug 3 fix: valid toggle resets the invalid counter
+            self.consecutive_invalid = 0
+            obs, mask = self._get_obs()
+            return obs, 0.0, False, False, {"raw_state": self.current_raw_state, "action_mask": mask}
 
         # Python 层 action mask 强制拦截：不合法动作直接拒，不发给 Lua
         current_mask = get_action_mask(self.current_raw_state, self.selected_hand_indices)
@@ -92,7 +93,7 @@ class BalatroEnv(gym.Env):
             self.consecutive_invalid += 1
             penalty = min(0.5 + self.consecutive_invalid * 0.05, 3.0)
             logger.debug(f"[Mask Blocked] ({self.consecutive_invalid}x) action={action_name}, penalty={penalty:.2f}")
-            obs = extract_features(self.current_raw_state)
+            obs = extract_features(self.current_raw_state, self.selected_hand_indices, current_mask)
             truncated = self.consecutive_invalid >= self.max_consecutive_invalid
             if truncated:
                 logger.warning(f"Episode truncated: {self.consecutive_invalid} consecutive invalid actions.")
@@ -112,7 +113,8 @@ class BalatroEnv(gym.Env):
         old_raw_state = self.current_raw_state
         self.current_raw_state = self.ipc.send_action_and_get_state(lua_cmd)
 
-        obs = extract_features(self.current_raw_state)
+        new_mask = get_action_mask(self.current_raw_state, self.selected_hand_indices)
+        obs = extract_features(self.current_raw_state, self.selected_hand_indices, new_mask)
         is_lua_invalid = self.current_raw_state.get("last_action_invalid", False)
 
         if is_lua_invalid:
@@ -158,7 +160,7 @@ class BalatroEnv(gym.Env):
         
         info = {
             "raw_state": self.current_raw_state,
-            "action_mask": get_action_mask(self.current_raw_state, self.selected_hand_indices)
+            "action_mask": new_mask
         }
 
         return obs, reward, terminated, truncated, info

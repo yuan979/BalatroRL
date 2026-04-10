@@ -15,14 +15,19 @@ MAX_HAND_SIZE = 21   # 手牌上限 (考虑到各种增加上限的 Buff)
 MAX_JOKERS = 10      # 小丑牌上限
 
 # 特征向量长度
-PLAYING_CARD_DIM = 24  # 每张手牌的特征数
-JOKER_DIM = 12         # 每张小丑的特征数
+PLAYING_CARD_DIM = 12  # 每张手牌的特征数: rank(1)+suit(4)+chips(1)+mult(1)+x_mult(1)+edition(4)
+JOKER_DIM = 10         # 每张小丑的特征数: cost(1)+sell(1)+rarity(1)+chips(1)+mult(1)+x_mult(1)+edition(4)
 
-SCREEN_LIST = ["IN_GAME", "BLIND_SELECT", "SHOP", "ROUND_EVAL", "OPENING_PACK", "GAME_OVER", "MAIN_MENU"]
+SCREEN_LIST = ["IN_GAME", "BLIND_SELECT", "SHOP", "ROUND_EVAL", "PACK_CHOICE", "GAME_OVER", "MAIN_MENU"]
 SCREEN_DIM = len(SCREEN_LIST)  # 7
 
-# 计算总维度: 7(全局) + 7(屏幕one-hot) + 21*24(手牌) + 10*12(小丑) = 638
-TOTAL_FEATURE_DIM = 7 + SCREEN_DIM + (MAX_HAND_SIZE * PLAYING_CARD_DIM) + (MAX_JOKERS * JOKER_DIM)
+# 选牌状态: 1(count/5) + 21(per-card flag) = 22
+SELECTION_DIM = 1 + MAX_HAND_SIZE  # 22
+# 动作掩码: 74 bits (one per action)
+ACTION_MASK_DIM = 74
+
+# 计算总维度: 7(全局) + 7(屏幕one-hot) + 21*12(手牌) + 10*10(小丑) + 22(选牌) + 74(掩码) = 462
+TOTAL_FEATURE_DIM = 7 + SCREEN_DIM + (MAX_HAND_SIZE * PLAYING_CARD_DIM) + (MAX_JOKERS * JOKER_DIM) + SELECTION_DIM + ACTION_MASK_DIM
 
 # ==========================================
 # 辅助编码函数
@@ -154,7 +159,8 @@ def extract_joker_features(raw_state: dict) -> np.ndarray:
 def build_observation_space() -> spaces.Dict:
     """
     正式的 Gym Observation Space。
-    [修改点]：统一为一个名为 'state' 的 638 维一维向量 (Box)。
+    统一为一个名为 'state' 的 462 维一维向量 (Box)。
+    7(全局) + 7(屏幕) + 252(手牌21×12) + 100(小丑10×10) + 22(选牌) + 74(掩码) = 462
     """
     obs_space = spaces.Dict({
         "state": spaces.Box(low=-1.0, high=100.0, shape=(TOTAL_FEATURE_DIM,), dtype=np.float32)
@@ -162,23 +168,37 @@ def build_observation_space() -> spaces.Dict:
     return obs_space
 
 
-def extract_features(raw_state: dict) -> dict:
+def extract_selection_features(selected_hand_indices: set) -> np.ndarray:
+    """编码当前手牌选择状态: [count/5] + [21 card flags] = 22 dims"""
+    feats = np.zeros(SELECTION_DIM, dtype=np.float32)
+    if selected_hand_indices:
+        feats[0] = len(selected_hand_indices) / 5.0
+        for idx in selected_hand_indices:
+            if 1 <= idx <= MAX_HAND_SIZE:
+                feats[idx] = 1.0  # 1-indexed: card 1 → position 1
+    return feats
+
+
+def extract_features(raw_state: dict, selected_hand_indices: set = None, action_mask: np.ndarray = None) -> dict:
     """
     顶层接口：将 raw JSON dict 转化为符合 observation_space 的字典。
-    [修改点]：将所有特征展平并拼接在一起。
+    包含选牌状态 (22 dims) 和动作掩码 (74 dims)，总计 734 维。
     """
-    global_feats = extract_global_scalars(raw_state)       # 7
-    screen_feats = extract_screen_one_hot(raw_state)       # 7
+    if selected_hand_indices is None:
+        selected_hand_indices = set()
+    if action_mask is None:
+        action_mask = np.zeros(ACTION_MASK_DIM, dtype=np.float32)
 
-    # 将二维矩阵展平为一维向量: (21, 24) -> (504,)
-    hand_feats = extract_hand_features(raw_state).flatten()
+    global_feats = extract_global_scalars(raw_state)                        # 7
+    screen_feats = extract_screen_one_hot(raw_state)                        # 7
+    hand_feats = extract_hand_features(raw_state).flatten()                 # 504
+    joker_feats = extract_joker_features(raw_state).flatten()               # 120
+    selection_feats = extract_selection_features(selected_hand_indices)     # 22
+    mask_feats = action_mask.astype(np.float32)                             # 74
 
-    # 将二维矩阵展平为一维向量: (10, 12) -> (120,)
-    joker_feats = extract_joker_features(raw_state).flatten()
+    # 拼接: 7 + 7 + 252 + 100 + 22 + 74 = 462
+    state_vector = np.concatenate([global_feats, screen_feats, hand_feats, joker_feats, selection_feats, mask_feats], axis=0)
 
-    # 拼接: 7 + 7 + 504 + 120 = 638
-    state_vector = np.concatenate([global_feats, screen_feats, hand_feats, joker_feats], axis=0)
-    
     return {
         "state": state_vector
     }
