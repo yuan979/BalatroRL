@@ -89,6 +89,7 @@ class BalatroEnv(gym.Env):
 
             # Bug 3 fix: valid toggle resets the invalid counter
             self.consecutive_invalid = 0
+            self.steps_without_progress = 0
             obs, mask = self._get_obs()
             return obs, 0.0, False, False, {"raw_state": self.current_raw_state, "action_mask": mask}
 

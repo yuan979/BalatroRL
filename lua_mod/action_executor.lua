@@ -2,8 +2,11 @@ local ActionExecutor = {}
 
 local Log = { info = print, warn = print, error = print, success = print, debug = print }
 
-local last_macro_time = 0
-local MACRO_COOLDOWN = 3.0
+local last_macro_time_by_cmd = {}
+local DEFAULT_MACRO_COOLDOWN = 0.25
+local MACRO_COOLDOWN_BY_CMD = {
+    START_NEW_RUN = 1.5,
+}
 
 function ActionExecutor.init(logger_instance)
     if logger_instance then Log = logger_instance end
@@ -108,12 +111,14 @@ function ActionExecutor.execute_command(content)
     
     if is_macro_action then
         local current_time = os.clock()
-        if current_time - last_macro_time < MACRO_COOLDOWN then
+        local cooldown = MACRO_COOLDOWN_BY_CMD[cmd] or DEFAULT_MACRO_COOLDOWN
+        local last_time = last_macro_time_by_cmd[cmd] or -1e9
+        if current_time - last_time < cooldown then
             Log.warn("Machine-gun prevention! Dropping spammed macro action: " .. cmd)
-            if G then G.last_action_invalid = true end
+            -- 防抖丢弃不再记为 invalid，避免训练被连续无效动作截断
             return
         end
-        last_macro_time = current_time
+        last_macro_time_by_cmd[cmd] = current_time
     end
 
     Log.info("Attempting to execute: " .. content)
