@@ -22,17 +22,25 @@ class BalatroEnv(gym.Env):
         self.current_step = 0
         self.max_steps = 500
         self.steps_without_progress = 0
-        self.idle_threshold = 20        # 连续多少步无进展开始惩罚
-        self.idle_penalty_per_step = 0.05  # 每步额外惩罚（超出阈值后）
+        self.idle_threshold = 20        # 杩炵画澶氬皯姝ユ棤杩涘睍寮€濮嬫儵锟?
+        self.idle_penalty_per_step = 0.05  # 姣忔棰濆鎯╃綒锛堣秴鍑洪槇鍊煎悗锟?
         self.consecutive_invalid = 0
-        self.max_consecutive_invalid = 30  # 连续无效动作超过此值直接截断
-        self._play_discard_cooldown = 0    # Lua拒绝PLAY/DISCARD后短暂屏蔽，防止在非SELECTING_HAND状态反复发送
+        self.max_consecutive_invalid = 30  # 杩炵画鏃犳晥鍔ㄤ綔瓒呰繃姝ゅ€肩洿鎺ユ埅锟?
+        self._play_discard_cooldown = 0    # Lua鎷掔粷PLAY/DISCARD鍚庣煭鏆傚睆钄斤紝闃叉鍦ㄩ潪SELECTING_HAND鐘舵€佸弽澶嶅彂锟?
+        self._blind_action_cooldown = 0    # 鐩叉敞瀹忓姩浣滃喎鍗达紝闄嶄綆SELECT/SKIP椋庢毚
 
-    def _get_obs(self):
+    def _build_action_mask(self):
         mask = get_action_mask(self.current_raw_state, self.selected_hand_indices)
         if self._play_discard_cooldown > 0:
             mask[0] = False  # PLAY
             mask[1] = False  # DISCARD
+        # Do NOT blanket-mask 66-71 during blind cooldown: in BLIND_SELECT the only
+        # legal actions are 66-71, so zeroing them makes every step mask-blocked and
+        # nothing is ever sent to Lua (only GET_STATE from reset remains visible).
+        return mask
+
+    def _get_obs(self):
+        mask = self._build_action_mask()
         obs = extract_features(self.current_raw_state, self.selected_hand_indices, mask)
         return obs, mask
 
@@ -48,6 +56,7 @@ class BalatroEnv(gym.Env):
         self.steps_without_progress = 0
         self.consecutive_invalid = 0
         self._play_discard_cooldown = 0
+        self._blind_action_cooldown = 0
         self.current_raw_state = self.ipc.send_action_and_get_state("GET_STATE")
         current_screen = self.current_raw_state.get("current_screen")
         
@@ -65,12 +74,38 @@ class BalatroEnv(gym.Env):
         return obs, {"raw_state": self.current_raw_state, "action_mask": mask}
 
     def step(self, action):
+
         self.current_step += 1
         action_name = ACTION_MAPPING.get(action, None)
         if action_name is None:
             raise ValueError(f"Invalid action index: {action}")
+        current_screen = self.current_raw_state.get("current_screen")
 
-        if action_name.startswith("TOGGLE_CARD_"):
+        if self._play_discard_cooldown > 0:
+            self._play_discard_cooldown -= 1
+        if self._blind_action_cooldown > 0:
+            self._blind_action_cooldown -= 1
+
+        # In BLIND_SELECT, force action into legal blind macro set as early as possible
+        # so we do not get trapped in local-only toggle returns.
+        if current_screen == "BLIND_SELECT" and not (
+            action_name.startswith("SELECT_BLIND") or action_name.startswith("SKIP_BLIND")
+        ):
+            current_mask = self._build_action_mask()
+            preferred = [66, 69, 67, 70, 68, 71]
+            chosen = None
+            for idx in preferred:
+                if current_mask[idx]:
+                    chosen = idx
+                    break
+            if chosen is not None:
+                old_action_name = action_name
+                action = chosen
+                action_name = ACTION_MAPPING[chosen]
+
+        # Toggle cards should only be local in IN_GAME.
+        if action_name.startswith("TOGGLE_CARD_") and current_screen == "IN_GAME":
+            prev_steps_wo_progress = self.steps_without_progress
             idx = int(action_name.split("_")[-1])
             if idx in self.selected_hand_indices:
                 self.selected_hand_indices.remove(idx)
@@ -89,15 +124,40 @@ class BalatroEnv(gym.Env):
 
             # Bug 3 fix: valid toggle resets the invalid counter
             self.consecutive_invalid = 0
-            self.steps_without_progress = 0
-            obs, mask = self._get_obs()
-            return obs, 0.0, False, False, {"raw_state": self.current_raw_state, "action_mask": mask}
+            current_mask = self._build_action_mask()
+            selected_count = len(self.selected_hand_indices)
+            auto_commit_action = None
+            if selected_count >= 2:
+                if current_mask[1]:
+                    auto_commit_action = 1  # DISCARD
+                elif current_mask[0]:
+                    auto_commit_action = 0  # PLAY
 
-        # Python 层 action mask 强制拦截：不合法动作直接拒，不发给 Lua
-        current_mask = get_action_mask(self.current_raw_state, self.selected_hand_indices)
+            if auto_commit_action is not None:
+                old_action_name = action_name
+                action = auto_commit_action
+                action_name = ACTION_MAPPING[action]
+            else:
+                # Local-only toggles do not advance game state; count them as stalled steps.
+                self.steps_without_progress += 1
+                reward = 0.0
+                if self.steps_without_progress > self.idle_threshold:
+                    idle_penalty = self.idle_penalty_per_step * (self.steps_without_progress - self.idle_threshold)
+                    reward -= idle_penalty
+                obs, mask = self._get_obs()
+                return obs, reward, False, False, {"raw_state": self.current_raw_state, "action_mask": mask}
+
+        # Python 锟?action mask 寮哄埗鎷︽埅锛氫笉鍚堟硶鍔ㄤ綔鐩存帴鎷掞紝涓嶅彂锟?Lua
+        current_mask = self._build_action_mask()
         if not current_mask[action]:
-            self.consecutive_invalid += 1
-            penalty = min(0.5 + self.consecutive_invalid * 0.05, 3.0)
+            is_blind_macro = action_name.startswith("SELECT_BLIND") or action_name.startswith("SKIP_BLIND")
+            if is_blind_macro:
+                # Blind macro blocked by dynamic mask/cooldown should not count as invalid streak.
+                self.consecutive_invalid = 0
+                penalty = 0.02
+            else:
+                self.consecutive_invalid += 1
+                penalty = min(0.5 + self.consecutive_invalid * 0.05, 3.0)
             logger.debug(f"[Mask Blocked] ({self.consecutive_invalid}x) action={action_name}, penalty={penalty:.2f}")
             obs = extract_features(self.current_raw_state, self.selected_hand_indices, current_mask)
             truncated = self.consecutive_invalid >= self.max_consecutive_invalid
@@ -133,28 +193,40 @@ class BalatroEnv(gym.Env):
                     lua_cmd = f"{action_name} {idx_str}"
                 self.selected_hand_indices.clear()
 
-        if self._play_discard_cooldown > 0:
-            self._play_discard_cooldown -= 1
-
         old_raw_state = self.current_raw_state
         self.current_raw_state = self.ipc.send_action_and_get_state(lua_cmd)
 
         new_mask = get_action_mask(self.current_raw_state, self.selected_hand_indices)
         obs = extract_features(self.current_raw_state, self.selected_hand_indices, new_mask)
         is_lua_invalid = self.current_raw_state.get("last_action_invalid", False)
+        is_lua_throttled = self.current_raw_state.get("last_action_throttled", False)
 
-        if is_lua_invalid:
-            self.consecutive_invalid += 1
-            penalty = min(0.5 + self.consecutive_invalid * 0.05, 3.0)  # 递增，上限3.0
-            reward = -penalty
-            logger.debug(f"[Penalty] Lua rejected ({self.consecutive_invalid}x): {lua_cmd}, penalty={penalty:.2f}")
+        if is_lua_throttled:
+            # Lua瀹忛槻鎶栦涪寮冿細涓嶈鍏nvalid杩炲嚮锛岄伩鍏嶈鎴柇
+            self.consecutive_invalid = 0
+            reward = -0.02
+            if lua_cmd.startswith(("SELECT_BLIND", "SKIP_BLIND")):
+                self._blind_action_cooldown = max(self._blind_action_cooldown, 6)
+        elif is_lua_invalid:
+            is_blind_macro_cmd = lua_cmd.startswith(("SELECT_BLIND", "SKIP_BLIND"))
+            if is_blind_macro_cmd:
+                # Blind macro rejection is often transient (UI state/animation), avoid invalid streak explosion.
+                self.consecutive_invalid = 0
+                reward = -0.05
+                self._blind_action_cooldown = max(self._blind_action_cooldown, 6)
+                logger.debug(f"[Penalty] Lua rejected blind macro: {lua_cmd}")
+            else:
+                self.consecutive_invalid += 1
+                penalty = min(0.5 + self.consecutive_invalid * 0.05, 3.0)  # 閫掑锛屼笂锟?.0
+                reward = -penalty
+                logger.debug(f"[Penalty] Lua rejected ({self.consecutive_invalid}x): {lua_cmd}, penalty={penalty:.2f}")
             if lua_cmd.startswith(("PLAY", "DISCARD")):
-                self._play_discard_cooldown = 4  # 屏蔽4步，等待游戏回到SELECTING_HAND
+                self._play_discard_cooldown = 4  # 灞忚斀4姝ワ紝绛夊緟娓告垙鍥炲埌SELECTING_HAND
         else:
             self.consecutive_invalid = 0
             reward = calculate_reward(old_raw_state, self.current_raw_state)
 
-        # 无进展惩罚：检测关键状态是否发生变化
+        # 鏃犺繘灞曟儵缃氾細妫€娴嬪叧閿姸鎬佹槸鍚﹀彂鐢熷彉锟?
         def _progress_key(s):
             stats = s.get("stats", {})
             if isinstance(stats, list): stats = {}
@@ -197,3 +269,4 @@ class BalatroEnv(gym.Env):
     
     def close(self): 
         self.ipc.disconnect()
+

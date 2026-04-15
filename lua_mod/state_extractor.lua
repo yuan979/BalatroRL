@@ -9,6 +9,7 @@ local function get_game_state_unsafe(CardExtractor)
     local safe_skeleton = {
         current_screen = "MAIN_MENU",
         last_action_invalid = false,
+        last_action_throttled = false,
         stats = { 
             money = 0, 
             ante = 1, 
@@ -142,7 +143,9 @@ local function get_game_state_unsafe(CardExtractor)
 
     return {
         current_screen = current_screen, stats = stats, blinds = blinds, shop = shop, jokers = jokers,
-        consumables = consumables, hand = hand, pack_choices = pack_choices, last_action_invalid = G.last_action_invalid or false
+        consumables = consumables, hand = hand, pack_choices = pack_choices,
+        last_action_invalid = G.last_action_invalid or false,
+        last_action_throttled = G.last_action_throttled or false
     }
 end
 
@@ -160,6 +163,7 @@ function StateExtractor.get_game_state(CardExtractor)
         return {
             current_screen = "MAIN_MENU",
             last_action_invalid = false,
+            last_action_throttled = false,
             stats = { money = 0, ante = 1, round = 1, hands_left = 0, discards_left = 0, current_chips = 0, blind_target = 0 },
             blinds = {}, shop = {}, jokers = {}, consumables = {}, hand = {}, pack_choices = {}
         }

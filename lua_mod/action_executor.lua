@@ -96,8 +96,11 @@ end
 function ActionExecutor.execute_command(content)
     if not content or content == "" then return end
 
-    -- [新增] 重置非法动作标记。Python端读取状态时可提取此标记用于计算惩罚
-    if G then G.last_action_invalid = false end
+    -- 每条动作命令都会重置动作结果标记
+    if G then
+        G.last_action_invalid = false
+        G.last_action_throttled = false
+    end
 
     -- 1. 优先解析指令
     local args = {}
@@ -115,6 +118,7 @@ function ActionExecutor.execute_command(content)
         local last_time = last_macro_time_by_cmd[cmd] or -1e9
         if current_time - last_time < cooldown then
             Log.warn("Machine-gun prevention! Dropping spammed macro action: " .. cmd)
+            if G then G.last_action_throttled = true end
             -- 防抖丢弃不再记为 invalid，避免训练被连续无效动作截断
             return
         end

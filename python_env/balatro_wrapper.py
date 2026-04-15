@@ -9,6 +9,7 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from balatro_env import BalatroEnv
 
+
 class BalatroDreamerWrapper(gym.Wrapper):
     def __init__(self, env_id=0):
         env = BalatroEnv()
