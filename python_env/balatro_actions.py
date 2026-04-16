@@ -1,4 +1,7 @@
+import logging
 import numpy as np
+
+logger = logging.getLogger("balatro_actions")
 
 # ==========================================
 # 动作空间定义 (Action Space Dictionary)
@@ -37,6 +40,17 @@ ACTION_MAPPING[73] = "NEXT_ROUND"
 
 NUM_ACTIONS = len(ACTION_MAPPING) # 总维度: 74
 
+
+def _blind_row_selectable(row) -> bool:
+    """True when this blind row is choosable (Lua may use any casing for 'Select')."""
+    if not isinstance(row, dict):
+        return False
+    st = row.get("state")
+    if st is None:
+        return False
+    return str(st).lower() == "select"
+
+
 # ==========================================
 # 动作掩码 (Action Masking) 引擎
 # ==========================================
@@ -65,14 +79,24 @@ def get_action_mask(raw_state: dict, selected_hand_indices: set) -> np.ndarray:
         for i in range(min(consumable_size, 10)): mask[23 + i] = True
         
     elif screen == "BLIND_SELECT":
-        blinds = raw_state.get("blinds", {})
-        if blinds.get("small_blind", {}).get("state") == "Select":
-            mask[66] = True; mask[69] = True
-        if blinds.get("big_blind", {}).get("state") == "Select":
-            mask[67] = True; mask[70] = True
-        if blinds.get("boss_blind", {}).get("state") == "Select":
-            mask[68] = True; mask[71] = True
-            
+        blinds = raw_state.get("blinds", {}) or {}
+        if _blind_row_selectable(blinds.get("small_blind")):
+            mask[66] = True
+            mask[69] = True
+        if _blind_row_selectable(blinds.get("big_blind")):
+            mask[67] = True
+            mask[70] = True
+        if _blind_row_selectable(blinds.get("boss_blind")):
+            mask[68] = True
+            mask[71] = True
+        if not mask[66:72].any():
+            logger.warning(
+                "BLIND_SELECT but blind macro mask 66-71 all False; "
+                "opening all six defensively (check Lua blind_states vs Python)."
+            )
+            for i in range(66, 72):
+                mask[i] = True
+
     elif screen == "ROUND_EVAL":
         mask[72] = True # CASH_OUT
         

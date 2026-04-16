@@ -1,10 +1,13 @@
 import datetime
 import uuid
+import json
+import time
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 import sys
 import os
+from pathlib import Path
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from balatro_env import BalatroEnv
@@ -41,6 +44,34 @@ class BalatroDreamerWrapper(gym.Wrapper):
         }
 
     def reset(self, **kwargs):
+        # New id every Gymnasium episode so dreamerv3-torch/tools.simulate keeps one
+        # in-memory trajectory per key; a fixed id makes train_length/train_return sum
+        # many episodes into one buffer (misleading metrics and bad sampling spans).
+        timestamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+        self.id = f"{timestamp}-{uuid.uuid4().hex}"
+        # region agent log
+        try:
+            logp = Path(__file__).resolve().parent.parent / "debug-260fea.log"
+            logp.parent.mkdir(parents=True, exist_ok=True)
+            with open(logp, "a", encoding="utf-8") as f:
+                f.write(
+                    json.dumps(
+                        {
+                            "sessionId": "260fea",
+                            "runId": "wrapper-reset",
+                            "hypothesisId": "H7",
+                            "location": "python_env/balatro_wrapper.py:reset",
+                            "message": "wrapper reset new episode id",
+                            "data": {"new_id": self.id},
+                            "timestamp": int(time.time() * 1000),
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+        except Exception as e:
+            sys.stderr.write(f"[BalatroRL] wrapper debug NDJSON failed: {e!r}\n")
+        # endregion
         obs, info = self.env.reset(**kwargs)
         return self._format_obs(obs, is_first=True, is_terminal=False)
         

@@ -1,7 +1,9 @@
 import logging
 import time
+import json
 import gymnasium as gym
 from gymnasium import spaces
+from pathlib import Path
 
 from balatro_ipc import BalatroIPC
 from balatro_actions import ACTION_MAPPING, NUM_ACTIONS, get_action_mask
@@ -10,6 +12,40 @@ from balatro_reward import calculate_reward
 
 logger = logging.getLogger("BalatroEnv")
 # logging.basicConfig(level=logging.DEBUG)
+
+# region agent log
+_DEBUG_LOG_PATH = Path(__file__).resolve().parent.parent / "debug-260fea.log"
+_DEBUG_SESSION_ID = "260fea"
+
+
+def _env_dbglog(hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    try:
+        _DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "sessionId": _DEBUG_SESSION_ID,
+            "runId": "episode-trace",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+    except Exception as e:
+        if not getattr(_env_dbglog, "_warned", False):
+            _env_dbglog._warned = True
+            try:
+                import sys
+
+                sys.stderr.write(
+                    f"[BalatroRL] debug NDJSON write failed: {e!r} path={_DEBUG_LOG_PATH}\n"
+                )
+            except Exception:
+                pass
+
+
+# endregion
 
 class BalatroEnv(gym.Env):
     def __init__(self):
@@ -24,10 +60,72 @@ class BalatroEnv(gym.Env):
         self.steps_without_progress = 0
         self.idle_threshold = 20        # 杩炵画澶氬皯姝ユ棤杩涘睍寮€濮嬫儵锟?
         self.idle_penalty_per_step = 0.05  # 姣忔棰濆鎯╃綒锛堣秴鍑洪槇鍊煎悗锟?
+        # IN_GAME local-only toggle streak (separate from _progress_key idle)
+        self._toggle_only_streak = 0
+        self.toggle_only_idle_threshold = 12
+        self.toggle_idle_extra_per_step = 0.08
+        self.max_toggle_only_streak = 120
         self.consecutive_invalid = 0
         self.max_consecutive_invalid = 30  # 杩炵画鏃犳晥鍔ㄤ綔瓒呰繃姝ゅ€肩洿鎺ユ埅锟?
         self._play_discard_cooldown = 0    # Lua鎷掔粷PLAY/DISCARD鍚庣煭鏆傚睆钄斤紝闃叉鍦ㄩ潪SELECTING_HAND鐘舵€佸弽澶嶅彂锟?
         self._blind_action_cooldown = 0    # 鐩叉敞瀹忓姩浣滃喎鍗达紝闄嶄綆SELECT/SKIP椋庢毚
+        self._episode_return = 0.0
+        self._episode_steps = 0
+
+    def _accumulate_episode_return(self, reward: float) -> None:
+        self._episode_return += float(reward)
+
+    def _hard_horizon(self) -> tuple[bool, bool]:
+        """Episode ends: GAME_OVER, max env steps, or consecutive invalid cap."""
+        terminated = self.current_raw_state.get("current_screen") == "GAME_OVER"
+        truncated = (
+            self.current_step >= self.max_steps
+            or self.consecutive_invalid >= self.max_consecutive_invalid
+            or self._toggle_only_streak >= self.max_toggle_only_streak
+        )
+        return truncated, terminated
+
+    def _dbg_episode_end(
+        self,
+        *,
+        hypothesis_id: str,
+        location: str,
+        step_reward: float,
+        truncated: bool,
+        terminated: bool,
+        lua_cmd: str | None,
+        is_lua_invalid: bool | None,
+        is_lua_throttled: bool | None,
+        extra: dict | None = None,
+    ) -> None:
+        if not (truncated or terminated):
+            return
+        if terminated:
+            reason = "game_over"
+        elif self.current_step >= self.max_steps:
+            reason = "max_steps"
+        elif self._toggle_only_streak >= self.max_toggle_only_streak:
+            reason = "toggle_only_streak"
+        else:
+            reason = "consecutive_invalid"
+        data = {
+            "reason": reason,
+            "terminated": bool(terminated),
+            "truncated": bool(truncated),
+            "current_step": int(self.current_step),
+            "episode_steps": int(self._episode_steps),
+            "episode_return": float(self._episode_return),
+            "step_reward": float(step_reward),
+            "consecutive_invalid": int(self.consecutive_invalid),
+            "steps_without_progress": int(self.steps_without_progress),
+            "screen": self.current_raw_state.get("current_screen"),
+            "last_lua_cmd": lua_cmd,
+            "last_action_invalid": None if is_lua_invalid is None else bool(is_lua_invalid),
+            "last_action_throttled": None if is_lua_throttled is None else bool(is_lua_throttled),
+        }
+        if extra:
+            data.update(extra)
+        _env_dbglog(hypothesis_id, location, "episode end", data)
 
     def _build_action_mask(self):
         mask = get_action_mask(self.current_raw_state, self.selected_hand_indices)
@@ -54,6 +152,7 @@ class BalatroEnv(gym.Env):
         
         self.current_step = 0
         self.steps_without_progress = 0
+        self._toggle_only_streak = 0
         self.consecutive_invalid = 0
         self._play_discard_cooldown = 0
         self._blind_action_cooldown = 0
@@ -71,15 +170,35 @@ class BalatroEnv(gym.Env):
                     break
                     
         obs, mask = self._get_obs()
+        # region agent log
+        _env_dbglog(
+            "H1",
+            "python_env/balatro_env.py:reset",
+            "env reset",
+            {
+                "screen": self.current_raw_state.get("current_screen"),
+                "episode_return": float(self._episode_return),
+                "episode_steps": int(self._episode_steps),
+            },
+        )
+        # endregion
+        self._episode_return = 0.0
+        self._episode_steps = 0
         return obs, {"raw_state": self.current_raw_state, "action_mask": mask}
 
     def step(self, action):
 
         self.current_step += 1
+        self._episode_steps += 1
         action_name = ACTION_MAPPING.get(action, None)
         if action_name is None:
             raise ValueError(f"Invalid action index: {action}")
         current_screen = self.current_raw_state.get("current_screen")
+
+        if not (
+            action_name.startswith("TOGGLE_CARD_") and current_screen == "IN_GAME"
+        ):
+            self._toggle_only_streak = 0
 
         if self._play_discard_cooldown > 0:
             self._play_discard_cooldown -= 1
@@ -114,13 +233,31 @@ class BalatroEnv(gym.Env):
                     self.selected_hand_indices.add(idx)
                 else:
                     # Bug 4 fix: 6th card toggle counts as invalid like all other invalid actions
+                    self._toggle_only_streak = 0
                     self.consecutive_invalid += 1
                     penalty = min(0.5 + self.consecutive_invalid * 0.05, 3.0)
                     obs, mask = self._get_obs()
-                    truncated = self.consecutive_invalid >= self.max_consecutive_invalid
-                    if truncated:
+                    truncated, terminated = self._hard_horizon()
+                    if truncated and self.current_step >= self.max_steps:
+                        logger.info(f"Episode truncated: max_steps={self.max_steps} reached.")
+                    elif truncated:
                         logger.warning(f"Episode truncated: {self.consecutive_invalid} consecutive invalid actions.")
-                    return obs, -penalty, False, truncated, {"raw_state": self.current_raw_state, "action_mask": mask}
+                    reward = -penalty
+                    # region agent log
+                    self._accumulate_episode_return(reward)
+                    self._dbg_episode_end(
+                        hypothesis_id="H3",
+                        location="python_env/balatro_env.py:toggle_sixth_card",
+                        step_reward=reward,
+                        truncated=truncated,
+                        terminated=False,
+                        lua_cmd=None,
+                        is_lua_invalid=None,
+                        is_lua_throttled=None,
+                        extra={"path": "toggle_sixth_card", "action_name": action_name},
+                    )
+                    # endregion
+                    return obs, reward, terminated, truncated, {"raw_state": self.current_raw_state, "action_mask": mask}
 
             # Bug 3 fix: valid toggle resets the invalid counter
             self.consecutive_invalid = 0
@@ -134,36 +271,100 @@ class BalatroEnv(gym.Env):
                     auto_commit_action = 0  # PLAY
 
             if auto_commit_action is not None:
+                self._toggle_only_streak = 0
                 old_action_name = action_name
                 action = auto_commit_action
                 action_name = ACTION_MAPPING[action]
             else:
                 # Local-only toggles do not advance game state; count them as stalled steps.
+                self._toggle_only_streak += 1
                 self.steps_without_progress += 1
                 reward = 0.0
                 if self.steps_without_progress > self.idle_threshold:
                     idle_penalty = self.idle_penalty_per_step * (self.steps_without_progress - self.idle_threshold)
                     reward -= idle_penalty
+                if self._toggle_only_streak > self.toggle_only_idle_threshold:
+                    reward -= self.toggle_idle_extra_per_step * (
+                        self._toggle_only_streak - self.toggle_only_idle_threshold
+                    )
                 obs, mask = self._get_obs()
-                return obs, reward, False, False, {"raw_state": self.current_raw_state, "action_mask": mask}
+                truncated, terminated = self._hard_horizon()
+                if truncated and self.current_step >= self.max_steps:
+                    logger.info(f"Episode truncated: max_steps={self.max_steps} reached.")
+                elif truncated and self._toggle_only_streak >= self.max_toggle_only_streak:
+                    logger.warning(
+                        "Episode truncated: toggle_only_streak=%s (max=%s)",
+                        self._toggle_only_streak,
+                        self.max_toggle_only_streak,
+                    )
+                elif truncated:
+                    logger.warning(f"Episode truncated: {self.consecutive_invalid} consecutive invalid actions.")
+                # region agent log
+                self._accumulate_episode_return(float(reward))
+                self._dbg_episode_end(
+                    hypothesis_id="H5",
+                    location="python_env/balatro_env.py:toggle_local_idle",
+                    step_reward=float(reward),
+                    truncated=truncated,
+                    terminated=terminated,
+                    lua_cmd=None,
+                    is_lua_invalid=None,
+                    is_lua_throttled=None,
+                    extra={
+                        "path": "toggle_local_idle",
+                        "steps_without_progress": int(self.steps_without_progress),
+                        "toggle_only_streak": int(self._toggle_only_streak),
+                    },
+                )
+                # endregion
+                return obs, reward, terminated, truncated, {"raw_state": self.current_raw_state, "action_mask": mask}
 
         # Python 锟?action mask 寮哄埗鎷︽埅锛氫笉鍚堟硶鍔ㄤ綔鐩存帴鎷掞紝涓嶅彂锟?Lua
         current_mask = self._build_action_mask()
         if not current_mask[action]:
             is_blind_macro = action_name.startswith("SELECT_BLIND") or action_name.startswith("SKIP_BLIND")
+            is_blind_screen_non_macro = (
+                current_screen == "BLIND_SELECT" and not is_blind_macro
+            )
             if is_blind_macro:
                 # Blind macro blocked by dynamic mask/cooldown should not count as invalid streak.
                 self.consecutive_invalid = 0
                 penalty = 0.02
+            elif is_blind_screen_non_macro:
+                # Wrong action family on blind screen (e.g. TOGGLE): do not explode consecutive_invalid.
+                self.consecutive_invalid = 0
+                penalty = 0.05
             else:
                 self.consecutive_invalid += 1
                 penalty = min(0.5 + self.consecutive_invalid * 0.05, 3.0)
             logger.debug(f"[Mask Blocked] ({self.consecutive_invalid}x) action={action_name}, penalty={penalty:.2f}")
             obs = extract_features(self.current_raw_state, self.selected_hand_indices, current_mask)
-            truncated = self.consecutive_invalid >= self.max_consecutive_invalid
-            if truncated:
+            truncated, terminated = self._hard_horizon()
+            if truncated and self.current_step >= self.max_steps:
+                logger.info(f"Episode truncated: max_steps={self.max_steps} reached.")
+            elif truncated:
                 logger.warning(f"Episode truncated: {self.consecutive_invalid} consecutive invalid actions.")
-            return obs, -penalty, False, truncated, {
+            reward = -penalty
+            # region agent log
+            self._accumulate_episode_return(reward)
+            self._dbg_episode_end(
+                hypothesis_id="H4",
+                location="python_env/balatro_env.py:mask_blocked",
+                step_reward=reward,
+                truncated=truncated,
+                terminated=False,
+                lua_cmd=None,
+                is_lua_invalid=None,
+                is_lua_throttled=None,
+                extra={
+                    "path": "mask_blocked",
+                    "action_name": action_name,
+                    "is_blind_macro": is_blind_macro,
+                    "is_blind_screen_non_macro": is_blind_screen_non_macro,
+                },
+            )
+            # endregion
+            return obs, reward, terminated, truncated, {
                 "raw_state": self.current_raw_state,
                 "action_mask": current_mask,
             }
@@ -248,20 +449,31 @@ class BalatroEnv(gym.Env):
             reward -= idle_penalty
             logger.debug(f"[Idle Penalty] {self.steps_without_progress} steps stalled, penalty={idle_penalty:.3f}")
             
-        truncated = False
-        if self.current_step >= self.max_steps:
-            truncated = True
+        truncated, terminated = self._hard_horizon()
+        if truncated and self.current_step >= self.max_steps:
             logger.info(f"Episode truncated: max_steps={self.max_steps} reached.")
-        elif self.consecutive_invalid >= self.max_consecutive_invalid:
-            truncated = True
+        elif truncated:
             logger.warning(f"Episode truncated: {self.consecutive_invalid} consecutive invalid actions.")
 
-        terminated = self.current_raw_state.get("current_screen") == "GAME_OVER"
-        
         info = {
             "raw_state": self.current_raw_state,
             "action_mask": new_mask
         }
+
+        # region agent log
+        self._accumulate_episode_return(float(reward))
+        self._dbg_episode_end(
+            hypothesis_id="H2",
+            location="python_env/balatro_env.py:step_main_path",
+            step_reward=float(reward),
+            truncated=bool(truncated),
+            terminated=bool(terminated),
+            lua_cmd=str(lua_cmd),
+            is_lua_invalid=bool(is_lua_invalid),
+            is_lua_throttled=bool(is_lua_throttled),
+            extra={"path": "ipc_step"},
+        )
+        # endregion
 
         return obs, reward, terminated, truncated, info
 

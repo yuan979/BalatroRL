@@ -13,6 +13,15 @@ def calculate_reward(old_state: dict, new_state: dict) -> float:
     old_screen = old_state.get("current_screen", "UNKNOWN")
     new_screen = new_state.get("current_screen", "UNKNOWN")
 
+    if old_screen == "BLIND_SELECT" and new_screen in (
+        "IN_GAME",
+        "SHOP",
+        "ROUND_EVAL",
+        "PACK_CHOICE",
+    ):
+        reward += 0.35
+        logger.debug("Left BLIND_SELECT -> %s, reward +0.35", new_screen)
+
     if new_screen == "GAME_OVER":
         return -20.0
         

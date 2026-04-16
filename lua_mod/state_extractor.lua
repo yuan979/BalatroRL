@@ -119,6 +119,12 @@ local function get_game_state_unsafe(CardExtractor)
             return { id_key = tag_key, name = name, description = loc_text, config_vars = vars }
         end
 
+        local function norm_blind_state(s)
+            if type(s) ~= "string" then return "Unknown" end
+            if string.lower(s) == "select" then return "Select" end
+            return s
+        end
+
         local small_tag_key = G.GAME.round_resets.blind_tags and G.GAME.round_resets.blind_tags.Small
         local big_tag_key = G.GAME.round_resets.blind_tags and G.GAME.round_resets.blind_tags.Big
         local boss_key = G.GAME.round_resets.blind_choices and G.GAME.round_resets.blind_choices.Boss
@@ -129,10 +135,11 @@ local function get_game_state_unsafe(CardExtractor)
             boss_name = G.localization.descriptions.Blind[boss_key].name or boss_key
         end
 
+        local bs = G.GAME.round_resets.blind_states
         blinds = {
-            small_blind = { state = G.GAME.round_resets.blind_states and G.GAME.round_resets.blind_states.Small or "Unknown", skip_tag = get_tag_info(small_tag_key) },
-            big_blind = { state = G.GAME.round_resets.blind_states and G.GAME.round_resets.blind_states.Big or "Unknown", skip_tag = get_tag_info(big_tag_key) },
-            boss_blind = { state = G.GAME.round_resets.blind_states and G.GAME.round_resets.blind_states.Boss or "Unknown", id_key = boss_key, name = boss_name, description = boss_desc }
+            small_blind = { state = norm_blind_state(bs and bs.Small or "Unknown"), skip_tag = get_tag_info(small_tag_key) },
+            big_blind = { state = norm_blind_state(bs and bs.Big or "Unknown"), skip_tag = get_tag_info(big_tag_key) },
+            boss_blind = { state = norm_blind_state(bs and bs.Boss or "Unknown"), id_key = boss_key, name = boss_name, description = boss_desc }
         }
     end
 
